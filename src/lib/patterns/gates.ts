@@ -1,4 +1,4 @@
-import { HIGH_FAILURES, type Pattern, type ReleasePointer, type TestCase } from "./types";
+import { HIGH_FAILURES, type Pattern, type ReleasePointer, type TestCase } from "./types.ts";
 
 const FRESH_MS = 14 * 24 * 60 * 60 * 1000;
 

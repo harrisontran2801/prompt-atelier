@@ -1,4 +1,4 @@
-import type { Pattern, PatternKind, PromptComponents, VariableDef } from "./types";
+import type { Pattern, PatternKind, PromptComponents, VariableDef } from "./types.ts";
 
 export type StackState = {
   personaId?: string;

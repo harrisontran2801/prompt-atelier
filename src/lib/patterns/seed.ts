@@ -1,5 +1,5 @@
-import { checksumOf, stableHash } from "./hash";
-import type { Pattern, PatternPack, PromptComponents, TestCase, VariableDef } from "./types";
+import { checksumOf, stableHash } from "./hash.ts";
+import type { Pattern, PatternPack, PromptComponents, TestCase, VariableDef } from "./types.ts";
 
 const NOW = "2026-09-28T00:00:00.000Z";
 

@@ -1,4 +1,4 @@
-import type { TestAssert } from "./types";
+import type { TestAssert } from "./types.ts";
 
 export type AssertResult = {
   type: TestAssert["type"];

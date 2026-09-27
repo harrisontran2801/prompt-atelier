@@ -3,6 +3,7 @@ import { PROVIDERS } from "@/lib/ai/catalog";
 import { runAsserts } from "@/lib/patterns/assert";
 import { compilePattern, missingRequired } from "@/lib/patterns/compose";
 import { productionGate, verifiedGate } from "@/lib/patterns/gates";
+import { caseFormVars } from "@/lib/patterns/run-case";
 import { FAILURE_MODES, type Pattern } from "@/lib/patterns/types";
 import { useAtelier } from "./atelier-context";
 
@@ -19,16 +20,21 @@ export function EditorView() {
   const { patterns, tests, releases, snapshots, history, actions, busy, run, provider, model, allowFallback, confirmRead, keySaved } = workspace;
   const pattern = patterns.find((item) => item.id === workspace.activeId) ?? patterns[0];
   const [tab, setTab] = useState<"blocks" | "tests" | "release">("blocks");
-  const [vars, setVars] = useState<Record<string, string>>({});
+  const [formVars, setFormVars] = useState<Record<string, string>>({});
+  const [formFor, setFormFor] = useState("");
   const [caseId, setCaseId] = useState("");
   const [failMode, setFailMode] = useState(FAILURE_MODES[0].id);
   const [failNote, setFailNote] = useState("");
   const [keyDraft, setKeyDraft] = useState("");
   const mine = tests.filter((item) => item.patternId === pattern?.id);
   const selected = mine.find((item) => item.id === caseId) ?? mine[0];
-  const activeVars = { ...(selected?.vars ?? {}), ...vars };
+  if (selected && formFor !== selected.id) {
+    setFormFor(selected.id);
+    setFormVars(caseFormVars(selected));
+  }
+  const activeVars = selected && formFor === selected.id ? formVars : selected ? caseFormVars(selected) : {};
   const compiled = pattern ? compilePattern(pattern, activeVars, true) : "";
-  const missing = pattern ? missingRequired(pattern.variables, selected?.vars ?? vars) : [];
+  const missing = pattern ? missingRequired(pattern.variables, activeVars) : [];
   const verified = pattern ? verifiedGate(pattern, tests) : { ok: false, reasons: [] };
   const production = pattern ? productionGate(pattern, tests, releases, confirmRead) : { ok: false, reasons: [] };
   const points = pattern ? history[pattern.id] ?? [] : [];
@@ -145,34 +151,45 @@ export function EditorView() {
               <input type="checkbox" checked={allowFallback} onChange={(event) => actions.setFallback(event.target.checked)} />
             </label>
             <p className="kicker">Cases</p>
+            {mine.length === 0 && (
+              <p className="banner">Pattern này chưa có test. Thêm bằng Report failure bên cạnh — ghi chú sẽ thành case hồi quy. Hoặc import một pack có sẵn test suite.</p>
+            )}
             {mine.map((item) => (
-              <button key={item.id} className={`nav-btn ${selected?.id === item.id ? "active" : ""}`} onClick={() => { setCaseId(item.id); setVars({}); }}>
+              <button key={item.id} className={`nav-btn ${selected?.id === item.id ? "active" : ""}`} onClick={() => setCaseId(item.id)}>
                 {item.description} · {item.origin}
               </button>
             ))}
             {selected && (
               <div>
                 {pattern.variables.map((variable) => (
-                  <label key={variable.name} className="muted">{variable.name} {variable.required ? "· required" : ""}
-                    <textarea value={activeVars[variable.name] ?? ""} onChange={(event) => setVars((current) => ({ ...current, [variable.name]: event.target.value }))} />
+                  <label key={variable.name} className="muted">{variable.name} {variable.required ? "· required" : ""} {variable.secret ? "· secret" : ""}
+                    <textarea value={activeVars[variable.name] ?? ""} onChange={(event) => setFormVars((current) => ({ ...current, [variable.name]: event.target.value }))} />
                   </label>
                 ))}
-                {missing.length > 0 && <p className="banner error">Thiếu {missing.map((item) => item.name).join(", ")}. Không chạy.</p>}
+                {missing.length > 0 && <p className="banner error">Thiếu biến bắt buộc: {missing.map((item) => item.name).join(", ")}. Không chạy.</p>}
                 <div className="btn-row">
-                  <button className="btn-primary" disabled={!!busy || missing.length > 0} onClick={() => actions.runCase(pattern.id, selected.id)}>
-                    {busy === "case" ? "Đang chạy…" : "Chạy case"}
+                  <button className="btn-primary" disabled={!!busy || missing.length > 0} onClick={() => actions.runCase(pattern.id, selected.id, activeVars)}>
+                    {busy === "case" ? "Đang chạy case…" : "Chạy case"}
                   </button>
-                  <button className="btn-ghost" disabled={!!busy} onClick={() => actions.runSuite(pattern.id)}>
+                  <button className="btn-ghost" disabled={!!busy || mine.length === 0} onClick={() => actions.runSuite(pattern.id)}>
                     {busy === "suite" ? "Đang chạy suite…" : "Chạy cả suite"}
                   </button>
                 </div>
               </div>
             )}
           </section>
-          <section className="card">
+          <section className="card" aria-busy={busy === "case" || busy === "suite"}>
             <p className="kicker">Output</p>
-            {run?.fallback && <p className="banner">Fallback sang {run.fallback}. Kết quả không còn đúng provider đã chọn.</p>}
-            {run && run.patternId === pattern.id ? (
+            {(busy === "case" || busy === "suite") && (
+              <p className="banner" role="status">{busy === "case" ? "Đang chạy case…" : "Đang chạy suite…"}</p>
+            )}
+            {run?.fallback && run.patternId === pattern.id && (
+              <p className="banner">
+                <span className="pill deprecated">fallback</span>{" "}
+                Yêu cầu {run.requestedProvider ?? provider}, thực tế chạy {run.provider}.
+              </p>
+            )}
+            {run && run.patternId === pattern.id && !busy ? (
               <>
                 <p className="meta-row">
                   <span className="tag">{run.provider}</span>
@@ -189,19 +206,18 @@ export function EditorView() {
                 ))}
                 {previous && <p className="muted">So với bản trước {previous.version}: {previous.passRate}% → {points.at(-1)?.passRate ?? run.passRate}%</p>}
               </>
-            ) : (
+            ) : busy ? null : (
               <p className="faint">Chưa chạy. Sandbox là code deterministic, không phải LLM.</p>
             )}
-            {selected && (
-              <div>
-                <p className="kicker">Report failure</p>
-                <select className="field" value={failMode} onChange={(event) => setFailMode(event.target.value)}>
-                  {FAILURE_MODES.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.severity}</option>)}
-                </select>
-                <textarea placeholder="Ghi chú ngắn" value={failNote} onChange={(event) => setFailNote(event.target.value)} />
-                <button className="btn-ghost" onClick={() => actions.reportFailure(pattern.id, failMode, failNote)}>Report failure</button>
-              </div>
-            )}
+            <div>
+              <p className="kicker">Report failure</p>
+              {mine.length === 0 && <p className="faint">Case đầu tiên được tạo từ ghi chú này. Không cần chạy model trước.</p>}
+              <select className="field" value={failMode} onChange={(event) => setFailMode(event.target.value)}>
+                {FAILURE_MODES.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.severity}</option>)}
+              </select>
+              <textarea placeholder="Ghi chú ngắn" value={failNote} onChange={(event) => setFailNote(event.target.value)} />
+              <button className="btn-ghost" onClick={() => { actions.reportFailure(pattern.id, failMode, failNote); setFailNote(""); }}>Report failure</button>
+            </div>
             <p className="faint">Assert trên case này: {(selected ? runAsserts(" ", selected.asserts).map((item) => item.type) : []).join(", ") || "—"}</p>
           </section>
         </div>
@@ -213,13 +229,26 @@ export function EditorView() {
           <p>Verified {verified.ok ? "đạt" : "chưa đạt"}</p>
           {!verified.ok && <ul>{verified.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
           <p>Production {production.ok ? "đạt" : "chưa đạt"}</p>
-          {!production.ok && <ul>{production.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
           <label className="chip">Đã đọc anti-use-case và red-team notes
             <input type="checkbox" checked={confirmRead} onChange={(event) => actions.setConfirmRead(event.target.checked)} />
           </label>
+          {!production.ok && (
+            <div id="production-reasons">
+              <p className="muted">Promote to Production đang tắt vì:</p>
+              <ul>{production.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            </div>
+          )}
           <div className="btn-row">
             <button className="btn-ghost" disabled={!verified.ok || !!busy} onClick={() => actions.promote(pattern.id, "staging")}>Promote to Staging</button>
-            <button className="btn-primary" disabled={!production.ok || !!busy} onClick={() => actions.promote(pattern.id, "production")}>Promote to Production</button>
+            <button
+              className="btn-primary"
+              disabled={!production.ok || !!busy}
+              aria-describedby={production.ok ? undefined : "production-reasons"}
+              title={production.ok ? "Đủ điều kiện production" : production.reasons.join(" ")}
+              onClick={() => actions.promote(pattern.id, "production")}
+            >
+              Promote to Production
+            </button>
             <button className="btn-ghost" onClick={() => actions.deprecate(pattern.id)}>Deprecate</button>
           </div>
           {currentProd && <p className="muted">Production pointer: v{currentProd.version} · {currentProd.passRate}% · {currentProd.testsetHash}</p>}

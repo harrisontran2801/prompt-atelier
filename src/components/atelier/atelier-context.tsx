@@ -4,9 +4,11 @@ import { runAi } from "@/lib/ai/run";
 import { modelLabel, providerById, type ProviderId } from "@/lib/ai/catalog";
 import { passRateOf, runAsserts } from "@/lib/patterns/assert";
 import { addPatternToStack, compilePattern, emptyStack, missingRequired, type StackState } from "@/lib/patterns/compose";
-import { checksumOf, stableHash } from "@/lib/patterns/hash";
+import { stableHash } from "@/lib/patterns/hash";
 import { productionGate, verifiedGate } from "@/lib/patterns/gates";
+import { buildFailureCase, forkPatternInto, importPackInto, rollbackPointer, touchPattern } from "@/lib/patterns/lifecycle";
 import { redactPii, sanitizePublicError } from "@/lib/patterns/privacy";
+import { caseUserInput, resolveRunVars } from "@/lib/patterns/run-case";
 import { sandboxAnswer } from "@/lib/patterns/sandbox";
 import { buildSeed } from "@/lib/patterns/seed";
 import type { Pattern, PatternPack, ReleasePointer, Snapshot, SuitePoint, TestCase } from "@/lib/patterns/types";
@@ -36,6 +38,7 @@ export type RunView = {
   redactions: string[];
   provider: string;
   model: string;
+  requestedProvider?: string;
   fallback?: string;
   latencyMs: number;
   ok: boolean;
@@ -77,7 +80,7 @@ type Actions = {
   setFallback: (value: boolean) => void;
   setProvider: (provider: ProviderId, model: string) => void;
   saveKey: (provider: ProviderId, key: string) => void;
-  runCase: (patternId: string, caseId: string) => Promise<void>;
+  runCase: (patternId: string, caseId: string, overrideVars?: Record<string, string>) => Promise<void>;
   runSuite: (patternId: string) => Promise<void>;
   reportFailure: (patternId: string, mode: string, note: string) => void;
   promote: (patternId: string, label: "staging" | "production") => void;
@@ -128,30 +131,6 @@ function loadState(): Persisted {
   } catch {
     return seed;
   }
-}
-
-function touchPattern(pattern: Pattern, patch: Partial<Pattern>): Pattern {
-  const next: Pattern = {
-    ...pattern,
-    ...patch,
-    components: patch.components ?? pattern.components,
-    variables: patch.variables ?? pattern.variables,
-    evidence: patch.evidence ?? pattern.evidence,
-    provenance: patch.provenance ?? pattern.provenance,
-    updatedAt: new Date().toISOString(),
-  };
-  if ((pattern.status === "verified" || pattern.status === "production") && patch.status === undefined) {
-    next.status = "draft";
-    next.evidence = { ...next.evidence, suitePass: false };
-  }
-  next.checksum = checksumOf({
-    id: next.id,
-    version: next.version,
-    components: next.components,
-    variables: next.variables,
-    outputContract: next.outputContract,
-  });
-  return next;
 }
 
 async function executeModel(input: {
@@ -244,26 +223,19 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
         bump((current) => ({ ...current, recentIds: [id, ...current.recentIds.filter((item) => item !== id)].slice(0, 8) }));
       },
       forkPattern: (id) => {
+        let forkId = "";
         bump((current) => {
-          const source = current.patterns.find((item) => item.id === id);
-          if (!source) return current;
-          const slug = `${source.id}-fork`;
-          const count = current.patterns.filter((item) => item.id.startsWith(slug)).length + 1;
-          const forkId = `${slug}-${count}`;
-          const fork = touchPattern(
-            { ...source, id: forkId, name: `${source.name} fork`, status: "draft", version: "0.1.0" },
-            { evidence: { ...source.evidence, suitePass: false, passRate: undefined, verifiedModels: [] } },
-          );
-          fork.status = "draft";
-          const cloned = current.tests
-            .filter((item) => item.patternId === id)
-            .map((item) => ({ ...item, id: `${item.id}-fork-${count}`, patternId: forkId }));
-          fork.testCaseIds = cloned.map((item) => item.id);
+          const result = forkPatternInto(current, id);
+          if (!result) return current;
+          forkId = result.forkId;
+          return result.next;
+        });
+        if (forkId) {
           setActiveId(forkId);
           setView("editor");
+          setNav(false);
           setNotice(`Đã fork ${forkId}`);
-          return { ...current, patterns: [fork, ...current.patterns], tests: [...cloned, ...current.tests], recentIds: [forkId, ...current.recentIds].slice(0, 8) };
-        });
+        }
       },
       addToStack: (id) => {
         let message = "";
@@ -337,22 +309,22 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
         setKeySaved(hasKey(provider));
         setNotice("Đã lưu key trên máy này. Ô nhập được xoá, key không hiện lại.");
       },
-      runCase: async (patternId, caseId) => {
+      runCase: async (patternId, caseId, overrideVars) => {
         setBusy("case");
         setError("");
         try {
           const pattern = data.patterns.find((item) => item.id === patternId);
           const test = data.tests.find((item) => item.id === caseId);
           if (!pattern || !test) throw new Error("Không thấy test");
-          const missing = missingRequired(pattern.variables, test.vars);
+          const vars = resolveRunVars(test, overrideVars);
+          const missing = missingRequired(pattern.variables, vars);
           if (missing.length) throw new Error(`Thiếu biến bắt buộc: ${missing.map((item) => item.name).join(", ")}`);
-          const compiled = compilePattern(pattern, test.vars, false);
-          const user = Object.entries(test.vars).map(([key, value]) => `${key}: ${value}`).join("\n");
+          const compiled = compilePattern(pattern, vars, false);
           const result = await executeModel({
             provider: data.provider,
             model: data.model,
             compiled,
-            user,
+            user: caseUserInput(vars),
             allowFallback: data.allowFallback,
           });
           const checks = runAsserts(result.text, test.asserts, pattern.outputSchema);
@@ -366,6 +338,7 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
             redactions: redacted.hits,
             provider: result.provider,
             model: modelLabel(result.provider, result.model),
+            requestedProvider: data.provider,
             fallback: result.fallback,
             latencyMs: result.latencyMs,
             ok,
@@ -393,12 +366,11 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
             const missing = missingRequired(pattern.variables, test.vars);
             if (missing.length) continue;
             const compiled = compilePattern(pattern, test.vars, false);
-            const user = Object.entries(test.vars).map(([key, value]) => `${key}: ${value}`).join("\n");
             const result = await executeModel({
               provider: data.provider,
               model: data.model,
               compiled,
-              user,
+              user: caseUserInput(test.vars),
               allowFallback: data.allowFallback,
             });
             lastOutput = result.text;
@@ -416,6 +388,7 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
             redactions: redacted.hits,
             provider: lastMeta.provider,
             model: modelLabel(lastMeta.provider, lastMeta.model),
+            requestedProvider: data.provider,
             fallback: lastMeta.fallback,
             latencyMs: lastMeta.latencyMs,
             ok: rate === 100,
@@ -456,30 +429,14 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
         const pattern = data.patterns.find((item) => item.id === patternId);
         if (!pattern) return;
         const base = data.tests.find((item) => item.patternId === patternId);
-        const rawVars = { ...(base?.vars ?? {}), note };
-        const vars: Record<string, string> = {};
-        for (const [key, value] of Object.entries(rawVars)) {
-          vars[key] = data.privacy ? redactPii(String(value)).text : String(value);
-        }
-        const id = `tst.${patternId.split(".").slice(-1)[0]}.fail-${Date.now().toString(36)}`;
-        const test: TestCase = {
-          id,
-          patternId,
-          description: `Failure ${mode}`,
-          vars,
-          asserts: base?.asserts ?? [{ type: "min_chars", value: 40 }],
-          origin: "failure-loop",
-          failureMode: mode,
-          note: data.privacy ? redactPii(note).text : note,
-          createdAt: new Date().toISOString(),
-        };
+        const test = buildFailureCase({ patternId, mode, note, base, privacy: data.privacy });
         bump((current) => ({
           ...current,
           tests: [test, ...current.tests],
           patterns: current.patterns.map((item) =>
             item.id === patternId
               ? touchPattern(item, {
-                  testCaseIds: [id, ...item.testCaseIds],
+                  testCaseIds: [test.id, ...item.testCaseIds],
                   failureModes: item.failureModes.includes(mode) ? item.failureModes : [...item.failureModes, mode],
                   evidence: { ...item.evidence, nTests: item.evidence.nTests + 1, suitePass: false },
                 })
@@ -525,20 +482,13 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
         setNotice(label === "production" ? "Đã trỏ production tới version này." : "Đã gắn staging / verified.");
       },
       rollback: (patternId, snapshotId) => {
+        let moved = false;
         bump((current) => {
-          const snapshot = current.snapshots.find((item) => item.id === snapshotId && item.patternId === patternId);
-          if (!snapshot) return current;
-          return {
-            ...current,
-            patterns: current.patterns.map((item) => (item.id === patternId ? { ...snapshot.pattern, status: "production" } : item)),
-            releases: current.releases.map((item) =>
-              item.patternId === patternId && item.label === "production"
-                ? { ...item, version: snapshot.version, snapshotId: snapshot.id, promotedAt: new Date().toISOString(), passRate: snapshot.pattern.evidence.passRate ?? item.passRate }
-                : item,
-            ),
-          };
+          const next = rollbackPointer(current, patternId, snapshotId);
+          moved = next !== current;
+          return next;
         });
-        setNotice("Đã chuyển production pointer. Version cũ vẫn còn.");
+        if (moved) setNotice("Đã chuyển production pointer. Snapshot cũ vẫn còn.");
       },
       deprecate: (patternId) => {
         bump((current) => ({
@@ -550,83 +500,63 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
       setConfirmRead,
       exportPack: (packId, format) => {
         const pack = data.packs.find((item) => item.id === packId);
-        if (!pack) return;
-        const patterns = data.patterns.filter((item) => pack.patterns.includes(item.id));
-        const tests = data.tests.filter((item) => pack.patterns.includes(item.patternId));
-        const body = format === "json"
-          ? JSON.stringify({ pack, patterns, tests }, null, 2)
-          : [
-              `# ${pack.name}`,
-              ``,
-              `id: ${pack.id}`,
-              `version: ${pack.version}`,
-              `license: ${pack.license}`,
-              `manifestHash: ${pack.manifestHash}`,
-              `dependsOn: [${pack.dependsOn.join(", ")}]`,
-              ``,
-              ...patterns.map((pattern) =>
-                [
-                  `## ${pattern.name}`,
-                  `id: ${pattern.id}`,
-                  `version: ${pattern.version}`,
-                  `status: ${pattern.status}`,
-                  `license: ${pattern.provenance.license}`,
-                  ``,
-                  "```",
-                  pattern.components.directive,
-                  pattern.components.task,
-                  "```",
-                  "",
-                ].join("\n"),
-              ),
-            ].join("\n");
-        const blob = new Blob([body], { type: format === "json" ? "application/json" : "text/markdown" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `${pack.id}.${format === "json" ? "json" : "md"}`;
-        link.click();
-        URL.revokeObjectURL(url);
+        if (!pack) {
+          setError("Không thấy pack để xuất.");
+          return;
+        }
+        try {
+          const patterns = data.patterns.filter((item) => pack.patterns.includes(item.id));
+          const tests = data.tests.filter((item) => pack.patterns.includes(item.patternId));
+          const body = format === "json"
+            ? JSON.stringify({ pack, patterns, tests }, null, 2)
+            : [
+                `# ${pack.name}`,
+                ``,
+                `id: ${pack.id}`,
+                `version: ${pack.version}`,
+                `license: ${pack.license}`,
+                `manifestHash: ${pack.manifestHash}`,
+                `dependsOn: [${pack.dependsOn.join(", ")}]`,
+                ``,
+                ...patterns.map((pattern) =>
+                  [
+                    `## ${pattern.name}`,
+                    `id: ${pattern.id}`,
+                    `version: ${pattern.version}`,
+                    `status: ${pattern.status}`,
+                    `license: ${pattern.provenance.license}`,
+                    ``,
+                    "```",
+                    pattern.components.directive,
+                    pattern.components.task,
+                    "```",
+                    "",
+                  ].join("\n"),
+                ),
+              ].join("\n");
+          const blob = new Blob([body], { type: format === "json" ? "application/json" : "text/markdown" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `${pack.id}.${format === "json" ? "json" : "md"}`;
+          link.click();
+          URL.revokeObjectURL(url);
+          setError("");
+          setNotice(`Đã xuất ${pack.id}.${format === "json" ? "json" : "md"}.`);
+        } catch (err) {
+          setError(sanitizePublicError(err instanceof Error ? err.message : "Không xuất được pack"));
+        }
       },
       importPack: (raw) => {
-        setImportError("");
-        try {
-          const parsed = JSON.parse(raw) as { pack?: PatternPack; patterns?: Pattern[]; tests?: TestCase[] };
-          if (!parsed.pack?.id || !Array.isArray(parsed.patterns)) throw new Error("File không phải pack Atelier");
-          const notes: string[] = [];
-          bump((current) => {
-            let patterns = [...current.patterns];
-            let tests = [...current.tests];
-            for (const incoming of parsed.patterns ?? []) {
-              const existing = patterns.find((item) => item.id === incoming.id);
-              if (existing && (existing.status === "production" || existing.status === "verified")) {
-                const forkId = `${incoming.id}-import-${Date.now().toString(36).slice(-4)}`;
-                patterns = [{ ...incoming, id: forkId, status: "draft", name: `${incoming.name} import` }, ...patterns];
-                notes.push(`${incoming.id} đang ${existing.status} — tạo fork ${forkId}`);
-                for (const test of parsed.tests ?? []) {
-                  if (test.patternId === incoming.id) tests = [{ ...test, id: `${test.id}-imp`, patternId: forkId }, ...tests];
-                }
-              } else if (existing) {
-                patterns = patterns.map((item) => (item.id === incoming.id ? incoming : item));
-                notes.push(`Đã cập nhật draft ${incoming.id}`);
-              } else {
-                patterns = [incoming, ...patterns];
-              }
-            }
-            if (!notes.length) {
-              for (const test of parsed.tests ?? []) {
-                if (!tests.some((item) => item.id === test.id)) tests = [test, ...tests];
-              }
-            }
-            const packs = current.packs.some((item) => item.id === parsed.pack!.id)
-              ? current.packs.map((item) => (item.id === parsed.pack!.id ? parsed.pack! : item))
-              : [parsed.pack!, ...current.packs];
-            return { ...current, patterns, tests, packs };
-          });
-          setNotice(notes.join(" ") || `Đã nhập ${parsed.pack.id}`);
-        } catch (err) {
-          setImportError(err instanceof Error ? err.message : "Import lỗi");
+        const outcome = importPackInto(data, raw);
+        if (!outcome.ok) {
+          setImportError(outcome.error);
+          return;
         }
+        const next = outcome.next;
+        bump((current) => ({ ...current, patterns: next.patterns, tests: next.tests, packs: next.packs }));
+        setImportError("");
+        setNotice(outcome.notice);
       },
     };
   }, [confirmRead, data]);

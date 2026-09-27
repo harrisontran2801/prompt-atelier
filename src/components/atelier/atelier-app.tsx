@@ -155,7 +155,7 @@ function PatternCard({ pattern }: { pattern: Pattern }) {
 }
 
 function Packs() {
-  const { packs, actions, importError } = useAtelier();
+  const { packs, actions } = useAtelier();
   return (
     <div>
       <p className="kicker">Packs</p>
@@ -164,17 +164,17 @@ function Packs() {
         Import JSON
         <input
           type="file"
-          accept="application/json"
+          accept="application/json,.json"
           hidden
+          aria-label="Import pack JSON"
           onChange={async (event) => {
             const file = event.target.files?.[0];
+            event.target.value = "";
             if (!file) return;
             actions.importPack(await file.text());
-            event.target.value = "";
           }}
         />
       </label>
-      {importError && <p className="banner error">{importError}</p>}
       <div className="cards">
         {packs.map((pack) => (
           <article key={pack.id} className="card">
