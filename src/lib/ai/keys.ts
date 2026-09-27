@@ -17,24 +17,13 @@ export function readKeys(): KeyBag {
 }
 
 export function writeKeys(keys: KeyBag) {
-  window.localStorage.setItem(STORAGE, JSON.stringify(keys));
-}
-
-export function readPref(): { provider: ProviderId; model: string } {
-  if (typeof window === "undefined") return { provider: "pollinations", model: "openai" };
-  try {
-    const raw = window.localStorage.getItem("prompt-atelier-ai-pref");
-    if (!raw) return { provider: "pollinations", model: "openai" };
-    const parsed = JSON.parse(raw) as { provider?: ProviderId; model?: string };
-    return {
-      provider: parsed.provider ?? "pollinations",
-      model: parsed.model ?? "openai",
-    };
-  } catch {
-    return { provider: "pollinations", model: "openai" };
+  const clean: KeyBag = {};
+  for (const [id, value] of Object.entries(keys)) {
+    if (value?.trim()) clean[id as ProviderId] = value.trim();
   }
+  window.localStorage.setItem(STORAGE, JSON.stringify(clean));
 }
 
-export function writePref(provider: ProviderId, model: string) {
-  window.localStorage.setItem("prompt-atelier-ai-pref", JSON.stringify({ provider, model }));
+export function hasKey(id: ProviderId) {
+  return Boolean(readKeys()[id]);
 }

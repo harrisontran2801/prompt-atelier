@@ -1,4 +1,5 @@
 export type ProviderId =
+  | "sandbox"
   | "pollinations"
   | "groq"
   | "gemini"
@@ -27,6 +28,15 @@ export type ProviderDef = {
 
 export const PROVIDERS: ProviderDef[] = [
   {
+    id: "sandbox",
+    name: "Sandbox",
+    blurb: "Chạy local, deterministic. Không gọi mạng. Dùng để chấm regression.",
+    needsKey: false,
+    keyHint: "Không cần key",
+    keyUrl: "https://github.com/harrisontran2801/prompt-atelier",
+    models: [{ id: "deterministic", label: "Sandbox · deterministic", note: "code runner" }],
+  },
+  {
     id: "pollinations",
     name: "Pollinations",
     blurb: "Không cần key. OpenAI-compatible, dùng được ngay.",
@@ -37,8 +47,6 @@ export const PROVIDERS: ProviderDef[] = [
       { id: "openai", label: "Pollinations · openai", note: "mặc định" },
       { id: "openai-fast", label: "Pollinations · openai-fast" },
       { id: "openai-large", label: "Pollinations · openai-large" },
-      { id: "qwen-coder", label: "Pollinations · qwen-coder" },
-      { id: "deepseek", label: "Pollinations · deepseek" },
     ],
   },
   {
@@ -51,20 +59,17 @@ export const PROVIDERS: ProviderDef[] = [
     models: [
       { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B Instant" },
       { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
-      { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B" },
-      { id: "groq/compound", label: "Groq Compound" },
     ],
   },
   {
     id: "gemini",
     name: "Google Gemini",
-    blurb: "Free tier AI Studio. Flash rất ổn cho iterate prompt.",
+    blurb: "Free tier AI Studio. Flash ổn để iterate prompt.",
     needsKey: true,
     keyHint: "GEMINI_API_KEY · aistudio.google.com/apikey",
     keyUrl: "https://aistudio.google.com/apikey",
     models: [
       { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
       { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
     ],
   },
@@ -77,9 +82,7 @@ export const PROVIDERS: ProviderDef[] = [
     keyUrl: "https://openrouter.ai/keys",
     models: [
       { id: "openrouter/free", label: "OpenRouter Auto Free" },
-      { id: "qwen/qwen3.8-27b:free", label: "Qwen3.8 27B :free" },
       { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B :free" },
-      { id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning :free" },
     ],
   },
   {
@@ -92,7 +95,6 @@ export const PROVIDERS: ProviderDef[] = [
     models: [
       { id: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen2.5 7B Instruct" },
       { id: "meta-llama/Llama-3.1-8B-Instruct", label: "Llama 3.1 8B Instruct" },
-      { id: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct" },
     ],
   },
   {
@@ -102,10 +104,7 @@ export const PROVIDERS: ProviderDef[] = [
     needsKey: true,
     keyHint: "TOGETHER_API_KEY · api.together.xyz",
     keyUrl: "https://api.together.xyz/settings/api-keys",
-    models: [
-      { id: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", label: "Llama 3.1 8B Turbo" },
-      { id: "Qwen/Qwen2.5-7B-Instruct-Turbo", label: "Qwen2.5 7B Turbo" },
-    ],
+    models: [{ id: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", label: "Llama 3.1 8B Turbo" }],
   },
   {
     id: "mistral",
@@ -114,15 +113,12 @@ export const PROVIDERS: ProviderDef[] = [
     needsKey: true,
     keyHint: "MISTRAL_API_KEY · console.mistral.ai",
     keyUrl: "https://console.mistral.ai/api-keys",
-    models: [
-      { id: "mistral-small-latest", label: "Mistral Small" },
-      { id: "open-mistral-7b", label: "Open Mistral 7B" },
-    ],
+    models: [{ id: "mistral-small-latest", label: "Mistral Small" }],
   },
   {
     id: "xai",
     name: "xAI Grok",
-    blurb: "Dùng key server (nếu có) hoặc key của bạn.",
+    blurb: "Dùng key server nếu có, hoặc key của bạn. Không hiện lại sau khi lưu.",
     needsKey: false,
     envFallback: "XAI_API_KEY",
     keyHint: "Tuỳ chọn XAI_API_KEY · console.x.ai",
@@ -134,8 +130,7 @@ export const PROVIDERS: ProviderDef[] = [
   },
 ];
 
-export const providerById = (id: string) =>
-  PROVIDERS.find((item) => item.id === id) ?? PROVIDERS[0];
+export const providerById = (id: string) => PROVIDERS.find((item) => item.id === id) ?? PROVIDERS[0];
 
 export const modelLabel = (providerId: string, modelId: string) => {
   const provider = providerById(providerId);

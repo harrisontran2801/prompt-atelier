@@ -1,8 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { PromptAtelier } from "@/components/prompt/prompt-atelier";
+import { AtelierApp } from "@/components/atelier/atelier-app";
 
-export const Route = createFileRoute("/")({ component: Home });
-
-function Home() {
-  return <PromptAtelier />;
-}
+export const Route = createFileRoute("/")({ component: AtelierApp });

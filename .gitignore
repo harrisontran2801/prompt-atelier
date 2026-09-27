@@ -2,9 +2,11 @@ node_modules
 dist
 .output
 .vercel
-.grok
+.grok/*
+!.grok/app-env.json
 screenshots
 artifacts
+attachments
 *.log
 .env
 .env.*

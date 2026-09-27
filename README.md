@@ -1,29 +1,40 @@
-# PROMPT ATELIER
+# Prompt Atelier
 
-Workbench local-first để thiết kế prompt có cấu trúc, nhiều role, và chạy thật trên API AI miễn phí.
+Local-first prompt workbench. Mỗi pattern là một artifact có phiên bản: tìm được, lắp ghép được, chạy test được, và chỉ lên production khi không regression.
 
-## AI miễn phí đã gắn
+Không bắt buộc tài khoản. Dữ liệu nằm trên máy (`localStorage`). Key API không được ghi vào repo.
 
-| Provider | Key | Dùng để |
+## Làm được gì
+
+- **Pattern library** — persona, protocol, task, format, guardrail, evaluator, safety. Mỗi pattern có use case, anti-use, biến, hợp đồng output, evidence (số test, pass rate, hash bộ test).
+- **Stack** — ghép nhiều pattern. Safety thắng conflict; format thắng format; guardrail được hợp nhất.
+- **Test lab** — Sandbox chấm assertion tại chỗ, không cần key. Có key thì chạy model thật. Lỗi có thể biến thành test hồi quy.
+- **Cổng phát hành** — draft → verified → production. Production yêu cầu suite không tụt và lỗi nghiêm trọng đã có test.
+- **Pack** — xuất / nhập JSON để chia sẻ hoặc rollback.
+- **Privacy** — redact PII trước khi lưu.
+
+## Provider
+
+| Provider | Key | Ghi chú |
 |---|---|---|
-| **Pollinations** | Không cần | Default. Generate / chấm điểm / test lab |
-| **Groq** | Free tier | Llama 3.1/3.3, rất nhanh |
-| **Gemini** | AI Studio free | Flash 2.0 / 2.5 |
-| **OpenRouter `:free`** | Key $0 | Qwen3.8, Gemma 4, Nemotron |
-| **Hugging Face** | Token free | Router open models |
-| **Together / Mistral** | Credit lúc đăng ký | Fallback thêm |
-| **xAI Grok** | `XAI_API_KEY` server hoặc key user | Nếu có quota |
+| Sandbox | Không | Deterministic, mặc định khi test |
+| Pollinations | Không | Fallback miễn phí |
+| Groq | Free tier | Nhanh |
+| Gemini | AI Studio | Flash |
+| OpenRouter | Key, có model `:free` | |
+| Hugging Face | Token | |
+| Together / Mistral | Credit đăng ký | |
+| xAI | `XAI_API_KEY` hoặc key người dùng | Server-only nếu đặt env |
 
-Key lưu `localStorage`. Server chỉ forward khi bạn bấm Generate / Cải thiện / Chấm điểm / Chạy model. Provider lỗi thì tự fallback sang Pollinations.
+Key người dùng chỉ nằm trong `localStorage`. Server forward khi bạn bấm chạy, và che key khỏi thông báo lỗi.
 
-## Tính năng
+## Mã nguồn
 
-- Role library + 5 khối: directive, context, task, guardrails, output
-- AI Compose: một câu ý tưởng thành đủ 5 khối
-- AI cải thiện từng khối
-- Quality score bằng model
-- Test lab gọi model thật
-- Preview biến `{{variable}}`, copy, export MD/JSON, lưu cục bộ
+| Đường dẫn | Việc |
+|---|---|
+| `src/lib/patterns/` | Schema, seed, compose, assert, gate, privacy, sandbox |
+| `src/components/atelier/` | Thư viện, editor, stack, test lab |
+| `src/lib/ai/` | Catalog provider và proxy |
 
 ## Chạy
 
@@ -32,6 +43,10 @@ npm install
 npm run dev
 ```
 
-App lắng nghe cổng `8080`.
+Dev server lắng nghe `0.0.0.0:8080`. Auth tắt qua `.grok/app-env.json` (`VITE_AUTH_ENABLED=false`).
 
-Lấy key (tuỳ chọn): [Pollinations](https://enter.pollinations.ai) · [Groq](https://console.groq.com/keys) · [Gemini](https://aistudio.google.com/apikey) · [OpenRouter](https://openrouter.ai/keys) · [Hugging Face](https://huggingface.co/settings/tokens)
+Lấy key (tuỳ chọn): [Groq](https://console.groq.com/keys) · [Gemini](https://aistudio.google.com/apikey) · [OpenRouter](https://openrouter.ai/keys) · [Hugging Face](https://huggingface.co/settings/tokens)
+
+## License
+
+MIT
