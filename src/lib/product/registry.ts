@@ -111,7 +111,7 @@ export const PROVIDER_POLICIES: ProviderPolicy[] = [
   {
     id: "xai",
     access: "managed-paid",
-    requiresKey: false,
+    requiresKey: true,
     termsUrl: "https://x.ai/legal/terms-of-service",
     quotaNote: "Key server chỉ chạy khi có gói trả phí và bạn đồng ý trừ tín dụng. Không nằm trong free pool.",
     lastVerifiedAt: "2026-09-20",

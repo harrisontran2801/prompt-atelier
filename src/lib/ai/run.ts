@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { ProviderId } from "./catalog";
+import { resolveXaiKey } from "./xai-key";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -138,7 +139,7 @@ async function postJson(url: string, body: unknown, headers: Record<string, stri
   }
 }
 
-async function callProvider(input: AiRunInput): Promise<AiRunResult> {
+async function callProvider(input: AiRunInput, managedServerKey?: string): Promise<AiRunResult> {
   const messages = clipMessages(input.messages);
   const maxTokens = Math.min(input.maxTokens ?? 700, MAX_OUTPUT_TOKENS);
   const temperature = input.temperature ?? 0.2;
@@ -219,8 +220,8 @@ async function callProvider(input: AiRunInput): Promise<AiRunResult> {
     return { text, provider: "gemini", model: input.model };
   }
   if (input.provider === "xai") {
-    const xaiKey = key || process.env.XAI_API_KEY?.trim();
-    if (!xaiKey) throw new Error("Chưa có XAI_API_KEY trên server hoặc key người dùng");
+    const xaiKey = resolveXaiKey(key, managedServerKey);
+    if (!xaiKey) throw new Error("xAI BYOK cần API key của bạn. Request thường không dùng key trên server.");
     const json = await postJson(
       "https://api.x.ai/v1/chat/completions",
       { model: input.model || "grok-4-fast", messages, temperature, max_tokens: maxTokens },
@@ -236,7 +237,7 @@ async function fallbackPollinations(input: AiRunInput): Promise<AiRunResult> {
   return { ...result, fallback: "pollinations" };
 }
 
-export async function executeAi(data: AiRunInput): Promise<AiRunResult> {
+export async function executeAi(data: AiRunInput, managedServerKey?: string): Promise<AiRunResult> {
   const started = Date.now();
   const id = requestId();
   validateInput(data);
@@ -247,7 +248,7 @@ export async function executeAi(data: AiRunInput): Promise<AiRunResult> {
     requestId: id,
   });
   try {
-    const result = await callProvider(data);
+    const result = await callProvider(data, managedServerKey);
     if (!result.text?.trim()) throw new Error("Model trả về rỗng");
     return finish(result);
   } catch (error) {

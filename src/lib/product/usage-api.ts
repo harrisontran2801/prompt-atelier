@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { ProviderId } from "../ai/catalog.ts";
 import { executeAi } from "../ai/run.ts";
+import { applyMockBilling, billingModeOf } from "./billing-mode.ts";
 import {
-  applyBillingCommand,
   LOCAL_ACCOUNT,
   refundCredits,
   reserveCredits,
@@ -12,6 +12,7 @@ import {
   type BillingCommand,
 } from "./ledger.ts";
 import { getEconomy, setEconomy } from "./memory.ts";
+import { measuredRunSecrets } from "./measured-key.ts";
 import { metricFrom } from "./metrics.ts";
 import { estimateCostUsd, estimateTokens, planById } from "./plans.ts";
 import { circuitOpen, consumeFree, noteProviderFailure } from "./quota.ts";
@@ -47,7 +48,7 @@ export type UsageSnapshot = {
   spentMonthUsd: number;
   billingProblem: boolean;
   stripeConfigured: boolean;
-  billingMode: "mock";
+  billingMode: "mock" | "disabled";
   priceConfigured: boolean;
   lastTrace: RouteTrace | null;
   runs: number;
@@ -74,7 +75,7 @@ function snapshot(): UsageSnapshot {
     spentMonthUsd: account.spentMonthUsd,
     billingProblem: account.billingProblem,
     stripeConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET),
-    billingMode: "mock",
+    billingMode: billingModeOf(process.env),
     priceConfigured: planById("pro").priceUsd != null,
     lastTrace: economy.lastTrace,
     runs: economy.runs,
@@ -110,15 +111,24 @@ export const economyApi = createServerFn({ method: "POST" })
       return { ok: true as const, snapshot: snapshot() };
     }
 
+    if (data.action === "checkout" || data.action === "complete" || data.action === "webhook") {
+      if (billingModeOf(process.env) === "disabled") {
+        return {
+          ok: false as const,
+          error: "Mock billing tắt trên production. Không đổi gói và không cộng tín dụng.",
+          snapshot: snapshot(),
+        };
+      }
+    }
+
     if (data.action === "checkout") {
-      const plan = data.planId === "team" ? "team" : "pro";
       return {
         ok: true as const,
         checkout: {
           mode: "mock" as const,
           url: "",
           message: "Stripe chưa cấu hình. Bản thử không trừ tiền thật.",
-          planId: plan,
+          planId: data.planId === "team" ? "team" as const : "pro" as const,
         },
         snapshot: snapshot(),
       };
@@ -136,15 +146,16 @@ export const economyApi = createServerFn({ method: "POST" })
       } else {
         const plan = data.planId === "team" ? "team" : "pro";
         command = {
-          type: "checkout.completed",
+          type: "checkout.completed" as const,
           eventId: data.idempotencyKey && data.idempotencyKey.startsWith("idem_") ? data.idempotencyKey : `idem_mock_${plan}`,
           accountId: LOCAL_ACCOUNT,
-          planId: plan,
+          planId: plan as "pro" | "team",
         };
       }
       if (!command) return { ok: false as const, error: "Sự kiện không được xử lý", snapshot: snapshot() };
       const economy = getEconomy();
-      const applied = applyBillingCommand(economy.ledger, economy.webhookIds, command);
+      const applied = applyMockBilling(economy.ledger, economy.webhookIds, command, process.env);
+      if (!applied.ok) return { ok: false as const, error: applied.error, snapshot: snapshot() };
       setEconomy({ ...economy, ledger: applied.state, webhookIds: applied.seen });
       return { ok: true as const, duplicate: applied.duplicate, snapshot: snapshot() };
     }
@@ -240,14 +251,22 @@ export const economyApi = createServerFn({ method: "POST" })
 
     try {
       const model = decision.mode === "byok" ? data.byokModel || "" : decision.model;
+      const secrets = measuredRunSecrets(decision.mode, data.byokKey, process.env);
+      if (decision.mode === "managed-paid" && !secrets.managedServerKey) {
+        const refunded = refundCredits(reserved.state, { requestId: id, nowIso, reason: "missing-server-key" });
+        const trace = buildTrace(id, String(decision.provider), decision, estimatedCostUsd, 0);
+        trace.reason = "Route trả phí chưa có key server. Không lấy key từ request thường và không chuyển sang free.";
+        setEconomy({ ...getEconomy(), ledger: refunded.state, quota, lastTrace: trace });
+        return { ok: false as const, error: trace.reason, decision, trace, snapshot: snapshot() };
+      }
       const result = await executeAi({
         provider: decision.provider as ProviderId,
         model,
         messages: (data.messages ?? []).slice(0, 8),
-        userKey: decision.mode === "byok" ? data.byokKey : undefined,
+        userKey: secrets.userKey,
         maxTokens: policy?.maxTokens ?? 800,
         allowFallback: false,
-      });
+      }, secrets.managedServerKey);
       const settled = settleCredits(getEconomy().ledger, {
         requestId: id,
         actualCostUsd: decision.mode === "managed-paid" ? estimatedCostUsd : 0,

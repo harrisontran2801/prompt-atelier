@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { PROVIDERS } from "../ai/catalog.ts";
+import { resolveXaiKey } from "../ai/xai-key.ts";
 import { runAsserts } from "../patterns/assert.ts";
 import { buildSeed } from "../patterns/seed.ts";
+import { applyMockBilling, billingModeOf } from "./billing-mode.ts";
 import {
   applyBillingCommand,
   emptyLedger,
@@ -14,6 +18,7 @@ import {
   settleCredits,
 } from "./ledger.ts";
 import { compileWorkflow, exampleVars, JOBS } from "./jobs.ts";
+import { measuredRunSecrets } from "./measured-key.ts";
 import { metricFrom } from "./metrics.ts";
 import { estimateCostUsd, loadPlans, planById } from "./plans.ts";
 import { circuitOpen, consumeFree, emptyQuota, noteProviderFailure } from "./quota.ts";
@@ -44,13 +49,44 @@ describe("routing", () => {
     assert.equal(decideRoute(route({ intent: "regression", prefer: "managed", paidConsent: true, entitlement: "pro" })).mode, "sandbox");
   });
 
-  it("uses BYOK only when a key is present and does not become paid", () => {
-    const missing = decideRoute(route({ prefer: "byok", byokProvider: "groq", byokHasKey: false }));
-    assert.equal(missing.mode, "blocked");
-    const ok = decideRoute(route({ prefer: "byok", byokProvider: "groq", byokModel: "llama-3.1-8b-instant", byokHasKey: true }));
-    assert.equal(ok.mode, "byok");
-    assert.equal(ok.provider, "groq");
-    assert.equal(ok.fellBack, false);
+  it("blocks BYOK without a user key, including Pollinations and xAI", () => {
+    const pollinations = decideRoute(route({ prefer: "byok", byokProvider: "pollinations", byokHasKey: false }));
+    assert.equal(pollinations.mode, "blocked");
+    assert.notEqual(pollinations.mode, "free-public");
+    const xai = decideRoute(route({ prefer: "byok", byokProvider: "xai", byokHasKey: false }));
+    assert.equal(xai.mode, "blocked");
+    assert.notEqual(xai.mode, "managed-paid");
+    const withKey = decideRoute(route({ prefer: "byok", byokProvider: "pollinations", byokHasKey: true, byokModel: "openai" }));
+    assert.equal(withKey.mode, "byok");
+    assert.equal(withKey.fellBack, false);
+  });
+
+  it("keeps the server xAI key off the public run path", () => {
+    const previous = process.env.XAI_API_KEY;
+    process.env.XAI_API_KEY = "xai-server-secret";
+    try {
+      assert.equal(resolveXaiKey(undefined, undefined), "");
+      assert.equal(resolveXaiKey("user-key", undefined), "user-key");
+      const managed = measuredRunSecrets("managed-paid", "user-key", process.env);
+      assert.equal(managed.managedServerKey, "xai-server-secret");
+      assert.equal(managed.userKey, undefined);
+      const byok = measuredRunSecrets("byok", "user-key", process.env);
+      assert.equal(byok.managedServerKey, undefined);
+      assert.equal(byok.userKey, "user-key");
+      assert.equal(measuredRunSecrets("free-public", undefined, process.env).managedServerKey, undefined);
+      const runSource = readFileSync(new URL("../ai/run.ts", import.meta.url), "utf8");
+      assert.equal(runSource.includes("XAI_API_KEY"), false);
+      assert.match(runSource, /executeAi\(data\)/);
+      const apiSource = readFileSync(new URL("./usage-api.ts", import.meta.url), "utf8");
+      assert.match(apiSource, /measuredRunSecrets/);
+      assert.match(apiSource, /allowFallback:\s*false/);
+      const xai = PROVIDERS.find((item) => item.id === "xai");
+      assert.equal(xai?.needsKey, true);
+      assert.equal("envFallback" in (xai ?? {}), false);
+    } finally {
+      if (previous == null) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previous;
+    }
   });
 
   it("free pool needs consent, a live policy, and remaining quota", () => {
@@ -144,6 +180,129 @@ describe("ledger", () => {
     const settledAgain = settleCredits(settled.state, { requestId: "idem_once_12345678", actualCostUsd: 0.2, nowIso: NOW });
     assert.equal(settledAgain.duplicate, true);
     assert.equal(settledAgain.state.accounts[LOCAL_ACCOUNT].credits, 1800);
+  });
+
+  it("settles from the hold and refunds the whole hold when actual cost is zero", () => {
+    let state = setSpendingCap(
+      applyBillingCommand(emptyLedger(), [], {
+        type: "checkout.completed",
+        eventId: "evt_zero",
+        accountId: LOCAL_ACCOUNT,
+        planId: "pro",
+      }).state,
+      LOCAL_ACCOUNT,
+      10,
+    );
+    const reserved = reserveCredits(state, {
+      accountId: LOCAL_ACCOUNT,
+      requestId: "idem_zero_12345678",
+      routeMode: "managed-paid",
+      requestedProvider: "xai",
+      estimatedTokens: 640,
+      estimatedCostUsd: 0.2,
+      nowIso: NOW,
+    });
+    assert.equal(reserved.ok, true);
+    const settled = settleCredits(reserved.state, {
+      requestId: "idem_zero_12345678",
+      actualCostUsd: 0,
+      finalProvider: "xai",
+      nowIso: NOW,
+    });
+    assert.equal(settled.state.accounts[LOCAL_ACCOUNT].credits, 2000);
+    assert.equal(settled.state.accounts[LOCAL_ACCOUNT].reserved, 0);
+    const event = settled.state.events.find((item) => item.id === "evt_idem_zero_12345678_settle");
+    assert.equal(event?.routeMode, "managed-paid");
+    assert.equal(event?.requestedProvider, "xai");
+    assert.equal(event?.estimatedTokens, 640);
+    assert.equal(event?.creditsRefunded, event?.creditsReserved);
+    const nan = settleCredits(
+      reserveCredits(settled.state, {
+        accountId: LOCAL_ACCOUNT,
+        requestId: "idem_nan_12345678",
+        routeMode: "managed-paid",
+        requestedProvider: "xai",
+        estimatedTokens: 10,
+        estimatedCostUsd: 0.2,
+        nowIso: NOW,
+      }).state,
+      { requestId: "idem_nan_12345678", actualCostUsd: Number.NaN, nowIso: NOW },
+    );
+    assert.equal(nan.state.accounts[LOCAL_ACCOUNT].credits, 2000);
+  });
+
+  it("blocks paid reserve after a failed invoice and refills on a paid invoice", () => {
+    let state = applyBillingCommand(emptyLedger(), [], {
+      type: "checkout.completed",
+      eventId: "evt_bill",
+      accountId: LOCAL_ACCOUNT,
+      planId: "pro",
+    }).state;
+    state = setSpendingCap(state, LOCAL_ACCOUNT, 10);
+    const failed = applyBillingCommand(state, ["evt_bill"], {
+      type: "invoice.failed",
+      eventId: "evt_fail",
+      accountId: LOCAL_ACCOUNT,
+    });
+    const denied = reserveCredits(failed.state, {
+      accountId: LOCAL_ACCOUNT,
+      requestId: "idem_failbill_1234",
+      routeMode: "managed-paid",
+      requestedProvider: "xai",
+      estimatedTokens: 10,
+      estimatedCostUsd: 0.2,
+      nowIso: NOW,
+    });
+    assert.equal(denied.ok, false);
+    assert.match(denied.reason ?? "", /Hóa đơn/);
+    assert.equal(denied.state.accounts[LOCAL_ACCOUNT].credits, 2000);
+
+    const dirty = {
+      ...failed.state,
+      accounts: {
+        ...failed.state.accounts,
+        [LOCAL_ACCOUNT]: {
+          ...failed.state.accounts[LOCAL_ACCOUNT],
+          credits: 40,
+          reserved: 100,
+          spentMonthUsd: 4,
+          billingProblem: true,
+        },
+      },
+    };
+    const paid = applyBillingCommand(dirty, failed.seen, {
+      type: "invoice.paid",
+      eventId: "evt_paid",
+      accountId: LOCAL_ACCOUNT,
+    });
+    const account = paid.state.accounts[LOCAL_ACCOUNT];
+    assert.equal(account.billingProblem, false);
+    assert.equal(account.spentMonthUsd, 0);
+    assert.equal(account.reserved, 100);
+    assert.equal(account.credits, 1900);
+    const again = applyBillingCommand(paid.state, paid.seen, {
+      type: "invoice.paid",
+      eventId: "evt_paid",
+      accountId: LOCAL_ACCOUNT,
+    });
+    assert.equal(again.duplicate, true);
+    assert.equal(again.state.accounts[LOCAL_ACCOUNT].credits, 1900);
+  });
+
+  it("refuses mock plan changes in production", () => {
+    assert.equal(billingModeOf({ NODE_ENV: "production" }), "disabled");
+    assert.equal(billingModeOf({ NODE_ENV: "development" }), "mock");
+    const state = emptyLedger();
+    const blocked = applyMockBilling(state, [], {
+      type: "checkout.completed",
+      eventId: "evt_prod",
+      accountId: LOCAL_ACCOUNT,
+      planId: "pro",
+    }, { NODE_ENV: "production" });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.state.accounts[LOCAL_ACCOUNT].planId, "free");
+    assert.equal(blocked.state.accounts[LOCAL_ACCOUNT].credits, 0);
+    assert.equal(blocked.state, state);
   });
 
   it("refunds a provider failure and blocks a spend cap", () => {

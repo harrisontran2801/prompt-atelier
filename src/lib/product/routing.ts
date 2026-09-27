@@ -65,8 +65,11 @@ export function decideRoute(input: RouteInput): RouteDecision {
     if (!provider || provider === "sandbox" || !policy) {
       return blocked("Chưa chọn nhà cung cấp cho key của bạn.", ["sandbox"]);
     }
-    if (policy.requiresKey && !input.byokHasKey) {
-      return blocked("Chưa có API key trên máy này. Key nằm trong bộ nhớ trình duyệt, không gửi vào sổ tín dụng.", ["sandbox", "paid"]);
+    if (!input.byokHasKey) {
+      const reason = provider === "pollinations"
+        ? "Pollinations không có key không chạy ở BYOK. Muốn dùng endpoint công khai thì chọn free pool, có đồng ý và còn quota."
+        : "BYOK cần API key của bạn. Không dùng key server, không chuyển sang free và không chuyển sang trả phí.";
+      return blocked(reason, ["sandbox"]);
     }
     return {
       mode: "byok",

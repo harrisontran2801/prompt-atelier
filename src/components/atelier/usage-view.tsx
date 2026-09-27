@@ -60,7 +60,13 @@ export function UsageView() {
               className="btn-primary"
               onClick={async () => {
                 const result = await economyApi({ data: { action: "cap", spendingCapUsd: Number(cap) } });
+                if (!result.ok) {
+                  setNotice("");
+                  setError(result.error ?? "Không lưu được trần.");
+                  return;
+                }
                 if (result.snapshot) setSnapshot(result.snapshot);
+                setError("");
                 setNotice("Đã lưu trần trên máy chủ.");
               }}
             >
@@ -80,20 +86,34 @@ export function UsageView() {
                 {" · "}
                 {plan.monthlyCredits} tín dụng
               </p>
-              {plan.id === "pro" && (
+              {plan.id === "pro" && snapshot.billingMode === "mock" && (
                 <button
                   className="btn-primary"
                   onClick={async () => {
-                    await economyApi({ data: { action: "checkout", planId: "pro" } });
+                    const checkout = await economyApi({ data: { action: "checkout", planId: "pro" } });
+                    if (!checkout.ok) {
+                      setNotice("");
+                      setError(checkout.error ?? "Không mở được bản thử.");
+                      return;
+                    }
                     const done = await economyApi({
                       data: { action: "complete", planId: "pro", idempotencyKey: "idem_mock_pro_demo1" },
                     });
                     if (done.snapshot) setSnapshot(done.snapshot);
+                    if (!done.ok) {
+                      setNotice("");
+                      setError(done.error ?? "Không kích hoạt được bản thử.");
+                      return;
+                    }
+                    setError("");
                     setNotice(done.duplicate ? "Bản thử Pro đã kích hoạt trước đó. Không cộng tín dụng lần hai." : "Đã kích hoạt bản thử Pro. Không trừ tiền thật.");
                   }}
                 >
                   Kích hoạt bản thử Pro
                 </button>
+              )}
+              {plan.id === "pro" && snapshot.billingMode === "disabled" && (
+                <p className="faint">Bản thử Pro tắt trên production. Chưa có thanh toán thật.</p>
               )}
             </article>
           ))}

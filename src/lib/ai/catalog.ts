@@ -118,10 +118,9 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "xai",
     name: "xAI Grok",
-    blurb: "Dùng key server nếu có, hoặc key của bạn. Không hiện lại sau khi lưu.",
-    needsKey: false,
-    envFallback: "XAI_API_KEY",
-    keyHint: "Tuỳ chọn XAI_API_KEY · console.x.ai",
+    blurb: "BYOK cần key của bạn. Key trên server chỉ dùng cho route trả phí, sau khi có gói và bạn đồng ý trừ tín dụng. Request thường không lấy key server.",
+    needsKey: true,
+    keyHint: "API key của bạn · console.x.ai",
     keyUrl: "https://console.x.ai",
     models: [
       { id: "grok-4-fast", label: "Grok 4 Fast" },

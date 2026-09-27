@@ -21,6 +21,9 @@ export type Hold = {
   accountId: string;
   credits: number;
   estimatedCostUsd: number;
+  routeMode: RouteMode;
+  requestedProvider: string;
+  estimatedTokens: number;
   status: HoldStatus;
   actualCostUsd?: number;
   settledCredits?: number;
@@ -88,16 +91,26 @@ function push(state: LedgerState, event: UsageEvent): LedgerState {
   return { ...state, events: [...state.events, event] };
 }
 
+function finiteNonNegative(value: number | undefined, fallback: number) {
+  const raw = value == null ? fallback : value;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return 0;
+  return raw;
+}
+
 export function reserveCredits(state: LedgerState, input: ReserveInput): ReserveResult {
   const existing = state.holds[input.requestId];
   if (existing) return { state, ok: existing.status !== "refunded", duplicate: true };
   const account = state.accounts[input.accountId] ?? emptyAccount(input.accountId);
-  const credits = input.routeMode === "managed-paid" ? creditsForCost(input.estimatedCostUsd) : 0;
+  const estimatedCostUsd = finiteNonNegative(input.estimatedCostUsd, 0);
+  const credits = input.routeMode === "managed-paid" ? creditsForCost(estimatedCostUsd) : 0;
   if (input.routeMode === "managed-paid") {
+    if (account.billingProblem) {
+      return { state, ok: false, duplicate: false, reason: "Hóa đơn lỗi. Tạm dừng route trả phí." };
+    }
     if (account.planId === "free") {
       return { state, ok: false, duplicate: false, reason: "Gói Free không giữ tín dụng trả phí." };
     }
-    if (account.spentMonthUsd + input.estimatedCostUsd > account.spendingCapUsd) {
+    if (account.spentMonthUsd + estimatedCostUsd > account.spendingCapUsd) {
       return { state, ok: false, duplicate: false, reason: "Vượt trần chi tiêu tháng này." };
     }
     if (account.credits < credits) {
@@ -108,7 +121,10 @@ export function reserveCredits(state: LedgerState, input: ReserveInput): Reserve
     requestId: input.requestId,
     accountId: account.id,
     credits,
-    estimatedCostUsd: input.estimatedCostUsd,
+    estimatedCostUsd,
+    routeMode: input.routeMode,
+    requestedProvider: input.requestedProvider,
+    estimatedTokens: Number.isFinite(input.estimatedTokens) && input.estimatedTokens > 0 ? Math.floor(input.estimatedTokens) : 0,
     status: "reserved",
   };
   const nextAccount: Account = {
@@ -122,8 +138,8 @@ export function reserveCredits(state: LedgerState, input: ReserveInput): Reserve
     requestId: input.requestId,
     routeMode: input.routeMode,
     requestedProvider: input.requestedProvider,
-    estimatedTokens: input.estimatedTokens,
-    estimatedCostUsd: input.estimatedCostUsd,
+    estimatedTokens: hold.estimatedTokens,
+    estimatedCostUsd,
     creditsReserved: credits,
     creditsSettled: 0,
     creditsRefunded: 0,
@@ -149,8 +165,9 @@ export function settleCredits(
   if (hold.status === "settled" || hold.status === "refunded") return { state, ok: true, duplicate: true };
   const account = state.accounts[hold.accountId];
   if (!account) return { state, ok: false, duplicate: false, reason: "Không thấy tài khoản." };
-  const actualCost = input.actualCostUsd ?? hold.estimatedCostUsd;
-  const used = hold.credits === 0 ? 0 : Math.min(hold.credits, creditsForCost(actualCost) || hold.credits);
+  const actualCost = finiteNonNegative(input.actualCostUsd, hold.estimatedCostUsd);
+  const priced = creditsForCost(actualCost);
+  const used = hold.credits === 0 ? 0 : Math.min(hold.credits, priced);
   const refund = hold.credits - used;
   const next: Account = {
     ...account,
@@ -163,10 +180,10 @@ export function settleCredits(
     id: `evt_${hold.requestId}_settle`,
     accountId: account.id,
     requestId: hold.requestId,
-    routeMode: "managed-paid",
-    requestedProvider: hold.requestId,
+    routeMode: hold.routeMode,
+    requestedProvider: hold.requestedProvider,
     finalProvider: input.finalProvider,
-    estimatedTokens: 0,
+    estimatedTokens: hold.estimatedTokens,
     actualTokens: input.actualTokens,
     estimatedCostUsd: hold.estimatedCostUsd,
     actualCostUsd: actualCost,
@@ -202,9 +219,9 @@ export function refundCredits(state: LedgerState, input: { requestId: string; no
     id: `evt_${hold.requestId}_refund`,
     accountId: account.id,
     requestId: hold.requestId,
-    routeMode: "managed-paid",
-    requestedProvider: input.reason.slice(0, 80),
-    estimatedTokens: 0,
+    routeMode: hold.routeMode,
+    requestedProvider: hold.requestedProvider,
+    estimatedTokens: hold.estimatedTokens,
     estimatedCostUsd: hold.estimatedCostUsd,
     creditsReserved: hold.credits,
     creditsSettled: 0,
@@ -255,6 +272,15 @@ export function applyBillingCommand(
     next = { ...account, planId: "free", spendingCapUsd: 0, paidConsent: false };
   } else if (command.type === "invoice.failed") {
     next = { ...account, billingProblem: true };
+  } else if (command.type === "invoice.paid") {
+    const plan = planById(account.planId, env);
+    next = {
+      ...account,
+      credits: Math.max(0, plan.monthlyCredits - account.reserved),
+      reserved: account.reserved,
+      spentMonthUsd: 0,
+      billingProblem: false,
+    };
   }
   return {
     duplicate: false,
