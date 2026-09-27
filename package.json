@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node scripts/run-all-tests.mjs",
-    "test:atelier": "node --experimental-strip-types --test src/lib/patterns/atelier.test.ts src/lib/product/product.test.ts",
+    "test:atelier": "node --experimental-strip-types --test src/lib/patterns/atelier.test.ts src/lib/product/product.test.ts src/lib/product/hosted-economy.test.ts",
     "test:platform": "node scripts/run-platform-tests.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."

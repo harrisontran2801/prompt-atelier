@@ -17,3 +17,17 @@ export function measuredRunSecrets(
   }
   return { userKey: undefined as string | undefined, managedServerKey: undefined as string | undefined };
 }
+
+/** Missing managed key refunds the hold. It never falls back to free or to a user key. */
+export function managedExecutionPlan(mode: RouteMode, secrets: { userKey?: string; managedServerKey?: string }) {
+  if (mode === "managed-paid" && !secrets.managedServerKey) {
+    return { action: "refund" as const, fallback: false as const };
+  }
+  if (mode === "byok") {
+    return { action: "run" as const, userKey: secrets.userKey, managedServerKey: undefined as string | undefined };
+  }
+  if (mode === "managed-paid") {
+    return { action: "run" as const, userKey: undefined as string | undefined, managedServerKey: secrets.managedServerKey };
+  }
+  return { action: "run" as const, userKey: undefined as string | undefined, managedServerKey: undefined as string | undefined };
+}

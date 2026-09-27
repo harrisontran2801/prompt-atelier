@@ -43,7 +43,10 @@ export function UsageView() {
             <p>Free pool còn {snapshot.freeRemainingToday} / {snapshot.freeDailyCap} lượt hôm nay.</p>
             <p>Tín dụng còn {snapshot.creditsAvailable}, đang giữ {snapshot.creditsReserved}.</p>
             <p className="faint">Đã chi ước tính tháng này ${snapshot.spentMonthUsd}. Trần ${snapshot.spendingCapUsd}.</p>
-            <p className="faint">Chế độ {snapshot.billingMode}. Stripe {snapshot.stripeConfigured ? "đã cấu hình" : "chưa cấu hình"}.</p>
+            <p className="faint">
+              Kho {snapshot.economyStore === "sql" ? "SQL hosted" : "memory local"}. Billing {snapshot.billingMode}. Thanh toán thật chưa mở.
+            </p>
+            {snapshot.usageConfidence && <p className="faint">Usage lần gần nhất: {snapshot.usageConfidence}.</p>}
             {snapshot.lastTrace && (
               <p className="faint">
                 Lượt gần nhất: {snapshot.lastTrace.requestedProvider} → {snapshot.lastTrace.finalProvider}. {snapshot.lastTrace.reason}
@@ -111,6 +114,9 @@ export function UsageView() {
                 >
                   Kích hoạt bản thử Pro
                 </button>
+              )}
+              {plan.id === "pro" && snapshot.billingMode === "hosted" && (
+                <p className="faint">Ledger hosted đã bật. Checkout thật chưa mở, dù secret Stripe có hay không.</p>
               )}
               {plan.id === "pro" && snapshot.billingMode === "disabled" && (
                 <p className="faint">Bản thử Pro tắt trên production. Chưa có thanh toán thật.</p>

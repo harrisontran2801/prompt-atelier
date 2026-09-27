@@ -1,5 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { ProviderId } from "./catalog";
+import { retryDecision } from "../product/retry-policy";
+import { parseGeminiUsage, parseOpenAiUsage, type UsageConfidence } from "../product/usage";
 import { resolveXaiKey } from "./xai-key";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
@@ -21,6 +23,21 @@ export type AiRunResult = {
   fallback?: ProviderId;
   latencyMs?: number;
   requestId?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    cachedInputTokens?: number;
+    totalTokens?: number;
+  };
+  usageConfidence?: UsageConfidence;
+  providerRequestId?: string;
+};
+
+export type ExecuteControl = {
+  managedServerKey?: string;
+  idempotencyKey?: string;
+  skipGlobalRateLimit?: boolean;
 };
 
 const TIMEOUT_MS = 28_000;
@@ -111,11 +128,19 @@ async function readJson(response: Response) {
   }
 }
 
-async function postJson(url: string, body: unknown, headers: Record<string, string>, attempt = 0): Promise<unknown> {
+async function postJson(
+  url: string,
+  body: unknown,
+  headers: Record<string, string>,
+  attempt = 0,
+  idempotencyKey?: string,
+  allowRetry = true,
+): Promise<unknown> {
+  const sent = idempotencyKey ? { ...headers, "idempotency-key": idempotencyKey } : headers;
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json", ...headers },
+      headers: { "content-type": "application/json", ...sent },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -125,21 +150,35 @@ async function postJson(url: string, body: unknown, headers: Record<string, stri
         (json as { error?: { message?: string }; message?: string }).error?.message ||
         (json as { message?: string }).message ||
         `HTTP ${response.status}`;
-      if (attempt < 1 && (response.status === 429 || response.status >= 500)) {
-        return postJson(url, body, headers, attempt + 1);
+      if (retryDecision({ status: response.status, message: err, attempt, allowRetry, hasIdempotencyKey: Boolean(idempotencyKey) }) === "retry") {
+        return postJson(url, body, headers, attempt + 1, idempotencyKey, allowRetry);
       }
       throw new Error(err);
     }
     return json;
   } catch (error) {
-    if (attempt < 1 && error instanceof Error && /timeout|network|fetch/i.test(error.message)) {
-      return postJson(url, body, headers, attempt + 1);
+    const message = error instanceof Error ? error.message : "";
+    if (retryDecision({ message, attempt, allowRetry, hasIdempotencyKey: Boolean(idempotencyKey) }) === "retry") {
+      return postJson(url, body, headers, attempt + 1, idempotencyKey, allowRetry);
     }
     throw error;
   }
 }
 
-async function callProvider(input: AiRunInput, managedServerKey?: string): Promise<AiRunResult> {
+function attachUsage(result: AiRunResult, payload: unknown, kind: "openai" | "gemini" | "none"): AiRunResult {
+  if (kind === "none") return { ...result, usageConfidence: "unknown" };
+  const parsed = kind === "openai" ? parseOpenAiUsage(payload) : parseGeminiUsage(payload);
+  if (!parsed) return { ...result, usageConfidence: "unknown" };
+  return {
+    ...result,
+    usage: parsed.usage,
+    usageConfidence: parsed.usage.inputTokens != null && parsed.usage.outputTokens != null ? "actual" : "estimated",
+    providerRequestId:
+      "providerRequestId" in parsed && typeof parsed.providerRequestId === "string" ? parsed.providerRequestId : undefined,
+  };
+}
+
+async function callProvider(input: AiRunInput, managedServerKey?: string, idempotencyKey?: string, allowRetry = true): Promise<AiRunResult> {
   const messages = clipMessages(input.messages);
   const maxTokens = Math.min(input.maxTokens ?? 700, MAX_OUTPUT_TOKENS);
   const temperature = input.temperature ?? 0.2;
@@ -153,10 +192,13 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       "https://text.pollinations.ai/openai",
       { model: input.model || "openai", messages, temperature, max_tokens: maxTokens, private: true },
       { accept: "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
+      0,
+      idempotencyKey,
+      allowRetry,
     );
     const text = extractOpenAiText(json);
     if (!text) throw new Error("Pollinations không trả nội dung");
-    return { text, provider: "pollinations", model: input.model };
+    return attachUsage({ text, provider: "pollinations", model: input.model }, json, "openai");
   }
   if (input.provider === "groq") {
     if (!key) throw new Error("Cần Groq API key");
@@ -164,8 +206,11 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       "https://api.groq.com/openai/v1/chat/completions",
       { model: input.model, messages, temperature, max_tokens: maxTokens },
       { authorization: `Bearer ${key}` },
+      0,
+      idempotencyKey,
+      allowRetry,
     );
-    return { text: extractOpenAiText(json), provider: "groq", model: input.model };
+    return attachUsage({ text: extractOpenAiText(json), provider: "groq", model: input.model }, json, "openai");
   }
   if (input.provider === "openrouter") {
     if (!key) throw new Error("Cần OpenRouter API key");
@@ -173,8 +218,11 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       "https://openrouter.ai/api/v1/chat/completions",
       { model: input.model, messages, temperature, max_tokens: maxTokens },
       { authorization: `Bearer ${key}`, "http-referer": "https://prompt-atelier.local", "x-title": "Prompt Atelier" },
+      0,
+      idempotencyKey,
+      allowRetry,
     );
-    return { text: extractOpenAiText(json), provider: "openrouter", model: input.model };
+    return attachUsage({ text: extractOpenAiText(json), provider: "openrouter", model: input.model }, json, "openai");
   }
   if (input.provider === "together") {
     if (!key) throw new Error("Cần Together API key");
@@ -182,8 +230,11 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       "https://api.together.xyz/v1/chat/completions",
       { model: input.model, messages, temperature, max_tokens: maxTokens },
       { authorization: `Bearer ${key}` },
+      0,
+      idempotencyKey,
+      allowRetry,
     );
-    return { text: extractOpenAiText(json), provider: "together", model: input.model };
+    return attachUsage({ text: extractOpenAiText(json), provider: "together", model: input.model }, json, "openai");
   }
   if (input.provider === "mistral") {
     if (!key) throw new Error("Cần Mistral API key");
@@ -191,8 +242,11 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       "https://api.mistral.ai/v1/chat/completions",
       { model: input.model, messages, temperature, max_tokens: maxTokens },
       { authorization: `Bearer ${key}` },
+      0,
+      idempotencyKey,
+      allowRetry,
     );
-    return { text: extractOpenAiText(json), provider: "mistral", model: input.model };
+    return attachUsage({ text: extractOpenAiText(json), provider: "mistral", model: input.model }, json, "openai");
   }
   if (input.provider === "huggingface") {
     if (!key) throw new Error("Cần Hugging Face token");
@@ -200,8 +254,11 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       "https://router.huggingface.co/v1/chat/completions",
       { model: input.model, messages, temperature, max_tokens: maxTokens },
       { authorization: `Bearer ${key}` },
+      0,
+      idempotencyKey,
+      allowRetry,
     );
-    return { text: extractOpenAiText(json), provider: "huggingface", model: input.model };
+    return attachUsage({ text: extractOpenAiText(json), provider: "huggingface", model: input.model }, json, "openai");
   }
   if (input.provider === "gemini") {
     if (!key) throw new Error("Cần Gemini API key");
@@ -214,10 +271,13 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       url,
       { contents, systemInstruction: system ? { parts: [{ text: system }] } : undefined, generationConfig: { temperature, maxOutputTokens: maxTokens } },
       {},
+      0,
+      idempotencyKey,
+      allowRetry,
     );
     const text = extractGeminiText(json);
     if (!text) throw new Error("Gemini không trả nội dung");
-    return { text, provider: "gemini", model: input.model };
+    return attachUsage({ text, provider: "gemini", model: input.model }, json, "gemini");
   }
   if (input.provider === "xai") {
     const xaiKey = resolveXaiKey(key, managedServerKey);
@@ -226,8 +286,11 @@ async function callProvider(input: AiRunInput, managedServerKey?: string): Promi
       "https://api.x.ai/v1/chat/completions",
       { model: input.model || "grok-4-fast", messages, temperature, max_tokens: maxTokens },
       { authorization: `Bearer ${xaiKey}` },
+      0,
+      idempotencyKey,
+      allowRetry,
     );
-    return { text: extractOpenAiText(json), provider: "xai", model: input.model };
+    return attachUsage({ text: extractOpenAiText(json), provider: "xai", model: input.model }, json, "openai");
   }
   throw new Error("Provider không hỗ trợ");
 }
@@ -237,18 +300,27 @@ async function fallbackPollinations(input: AiRunInput): Promise<AiRunResult> {
   return { ...result, fallback: "pollinations" };
 }
 
-export async function executeAi(data: AiRunInput, managedServerKey?: string): Promise<AiRunResult> {
+function controlOf(second?: string | ExecuteControl): ExecuteControl {
+  if (typeof second === "string" || second == null) return { managedServerKey: second };
+  return second;
+}
+
+export async function executeAi(data: AiRunInput, second?: string | ExecuteControl): Promise<AiRunResult> {
+  const control = controlOf(second);
   const started = Date.now();
-  const id = requestId();
+  const id = control.idempotencyKey || requestId();
   validateInput(data);
-  rateLimit((data.provider || "anon").slice(0, 24));
+  if (!control.skipGlobalRateLimit) rateLimit((data.provider || "anon").slice(0, 24));
+  const managed = Boolean(control.managedServerKey);
+  const allowRetry = managed ? Boolean(control.idempotencyKey) : true;
   const finish = (result: AiRunResult): AiRunResult => ({
     ...result,
     latencyMs: Date.now() - started,
     requestId: id,
+    usageConfidence: result.usageConfidence ?? "unknown",
   });
   try {
-    const result = await callProvider(data, managedServerKey);
+    const result = await callProvider(data, control.managedServerKey, managed ? control.idempotencyKey : undefined, allowRetry);
     if (!result.text?.trim()) throw new Error("Model trả về rỗng");
     return finish(result);
   } catch (error) {

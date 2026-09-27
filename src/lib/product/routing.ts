@@ -25,6 +25,7 @@ export type RouteTrace = {
   actualCostUsd: number | null;
   mode: RouteMode;
   fellBack: boolean;
+  usageConfidence?: "actual" | "estimated" | "unknown";
 };
 
 export type RouteInput = {

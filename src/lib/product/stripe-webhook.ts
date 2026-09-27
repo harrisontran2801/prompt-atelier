@@ -5,23 +5,23 @@ import type { PlanId } from "./routing.ts";
 const TOLERANCE_SEC = 300;
 
 export function verifyStripeSignature(payload: string, header: string | null, secret: string, nowMs = Date.now()) {
-  if (!header || !secret) return false;
-  const parts = Object.fromEntries(
-    header.split(",").map((piece) => {
-      const [key, value] = piece.split("=");
-      return [key, value];
-    }),
-  );
-  const timestamp = parts.t;
-  const signature = parts.v1;
-  if (!timestamp || !signature) return false;
+  if (!header || !secret || !payload) return false;
+  const pairs = header.split(",").map((piece) => {
+    const index = piece.indexOf("=");
+    return [piece.slice(0, index), piece.slice(index + 1)] as const;
+  });
+  const timestamp = pairs.find((item) => item[0] === "t")?.[1];
+  const signatures = pairs.filter((item) => item[0] === "v1").map((item) => item[1]).filter(Boolean);
+  if (!timestamp || signatures.length === 0) return false;
   const age = Math.abs(nowMs / 1000 - Number(timestamp));
   if (!Number.isFinite(age) || age > TOLERANCE_SEC) return false;
   const expected = createHmac("sha256", secret).update(`${timestamp}.${payload}`).digest("hex");
   const left = Buffer.from(expected);
-  const right = Buffer.from(signature);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
+  return signatures.some((signature) => {
+    const right = Buffer.from(signature);
+    if (left.length !== right.length) return false;
+    return timingSafeEqual(left, right);
+  });
 }
 
 type StripeEvent = {

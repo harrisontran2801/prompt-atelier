@@ -1,54 +1,45 @@
 # Prompt Atelier — product and billing boundary
 
-Checked against commit `1625287` and the code in this tree. Local mode stays the default. Hosted billing is a separate path and is not required to get a result.
+Local mode stays the default. Hosted billing is a separate SQL path and is not required to get a result. Production does not charge anyone.
 
 ## What the user buys
 
-People do not come for a prompt. They come to finish a job: reply, summarize, compare, rewrite, review code, or research. A **workflow** (the stack of existing patterns) is how the job stays repeatable. Patterns stay the advanced building blocks. Studio, tests, and release gates stay available after the first result.
+People do not come for a prompt. They come to finish a job: reply, summarize, compare, rewrite, review code, or research. A workflow is how the job stays repeatable. Patterns stay the advanced building blocks.
 
-## Two modes
+## Two repositories
 
-| | Local Free | Hosted Cloud |
+| | Local Free | Hosted |
 |---|---|---|
-| Account | Not required | Required only for sync, managed execution, or billing |
-| Storage | `localStorage`, import/export | Server rows when `DATABASE_URL` is set |
-| Sandbox | Unlimited, on-device, not an LLM | Same |
-| Free public model | Only after consent, with a server cap | Same cap, keyed later by org |
-| BYOK | Browser `localStorage`, user is warned | Not copied to the server ledger |
-| Managed models | Do not run | Only with entitlement and explicit consent |
-| Stripe | Not required | Server adapter. Mock checkout when secrets are absent |
+| Account | Not required | Signed-in user, one billing org |
+| Ledger | In-memory `LOCAL_ACCOUNT` | `billing_accounts` locked per org |
+| When | No `DATABASE_URL` | `DATABASE_URL` set |
+| Sandbox | Unlimited, on device | Same, still local |
+| BYOK | Browser key only | Server never substitutes its xAI key |
+| Managed | Does not run as a paid product | Entitlement, consent, reserve, then server key |
+| Stripe | Mock only outside production | Mapping tables exist. Checkout stays closed |
 
-Missing Stripe, auth, or database must not block Local Free.
+`LOCAL_ACCOUNT` is the preview account. Production billing and hosted requests reject it. The client cannot send an account id.
 
 ## Routing
 
-Order, no silent paid fallback:
+No silent paid fallback:
 
-1. Preview or regression → Sandbox. No network.
-2. User picked BYOK and a key exists → that provider only. `allowFallback` is off on the metered path.
-3. User opted into “use free AI when available” and the provider is still inside the verified free-public policy → Approved Free Pool (Pollinations only, until another policy is re-verified).
-4. Free pool exhausted, unverified, or circuit-open → stop. Offer Sandbox, BYOK, or paid credits. Do not run paid.
-5. Managed route only if plan is Pro or Team, the user consented, credits were reserved, and the spend cap allows it.
+1. Preview or regression stays on Sandbox.
+2. BYOK runs only with the user's key. Pollinations without a key is not BYOK; it has to be the free pool.
+3. Free-public needs consent, a live policy, remaining quota, and a closed circuit.
+4. Exhausted free quota stops.
+5. Managed runs only after entitlement, paid consent, a committed reserve, and spend-cap room.
 
-Every metered run stores a trace: requested provider, attempted provider, final provider, reason, estimated cost, actual cost if known. The trace has no prompt, output, API key, or raw PII.
+A managed call is not retried on timeout or HTTP 5xx unless the same idempotency key is sent. The dispatch row is committed before the provider call, so a retry does not call the provider again.
 
-Free-public eligibility requires `access: free-public`, a policy URL, and `lastVerifiedAt` within 45 days. The UI must not say “free forever”.
-
-## Plans
-
-Prices are not hardcoded in React. `loadPlans()` reads `PLAN_PRO_PRICE_USD` and `PLAN_TEAM_PRICE_USD`. If unset, the UI says the price is not configured and checkout is a mock. Test defaults: Free = unlimited sandbox + 20 free-public runs/day; Pro = 2000 monthly credits; Team = 10000 pooled credits. One credit is an internal unit equal to $0.001 of estimated provider cost, not a cash balance the browser can edit.
+Usage is `actual` only when the provider returns input and output tokens and a price snapshot exists. Otherwise the trace says `estimated` or `unknown`. BYOK and free do not spend managed credits.
 
 ## Ledger
 
-`migrations/0002_billing.sql` is the hosted schema (`billing_customers`, `subscriptions`, `entitlements`, `plans`, append-only `credit_ledger` and `usage_events`, `provider_prices`, `checkout_events` with an idempotency key). Local and preview builds do not have `DATABASE_URL`, so the running app uses an in-memory server ledger with the same reserve → settle → refund rules. The browser only renders the server snapshot. It does not decide the remaining balance.
+`migrations/0002_billing.sql` is the earlier hosted shape. `migrations/0003_hosted_economy.sql` adds orgs, memberships, balances, an append-only credit ledger, usage events, dispatch keys, Stripe customer mapping, and provider event ids. Reserve, settle, and refund run in a transaction with a row lock. Invoice grants are unique per invoice id. A failed invoice sets `billing_problem` and blocks the next paid reserve.
 
-Retry with the same idempotency key must not charge twice and must not call the provider again after a settle.
+Prices are read from `PLAN_PRO_PRICE_USD` and `PLAN_TEAM_PRICE_USD`. If unset, the UI does not invent a price. Provider token prices live in the server price snapshot (`2026-09-28`), not in React.
 
 ## Privacy
 
-- Sandbox never leaves the machine.
-- Network runs say so before the click.
-- Usage rows store ids, enums, token estimates, and cost. Not the prompt or the output.
-- Privacy Mode still redacts PII before a failure is saved locally.
-- Provider errors are sanitized before they reach the UI.
-- Stripe webhook signatures are verified. Card data is never handled here.
+Usage rows, spans, and traces store ids, enums, token counts, and cost. They do not store the prompt, the output, an API key, or raw PII. Webhook handling keeps the event id and the mapped org, not the raw card payload. Stripe signatures are checked on the raw body and accept multiple `v1` signatures.

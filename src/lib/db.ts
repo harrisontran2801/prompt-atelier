@@ -46,6 +46,7 @@ export interface Sql {
  */
 const globalRef = globalThis as typeof globalThis & {
   __pgSqlPromise__?: Promise<Sql>;
+  __pgPool__?: import("pg").Pool;
   __pgliteInstance__?: Promise<import("@electric-sql/pglite").PGlite>;
   __pgliteMigrateChain__?: Promise<void>;
 };
@@ -94,6 +95,7 @@ function createNeonSql(): Promise<Sql> {
     types.setTypeParser(OID_DATE, identity);
     types.setTypeParser(OID_INTERVAL, identity);
     const pool = new Pool({ connectionString: databaseUrl });
+    globalRef.__pgPool__ = pool;
     return toSql(async <T>(text: string, params: unknown[]) => {
       const res = await pool.query(text, params);
       return res.rows as T[];
@@ -192,6 +194,42 @@ export function getSql(): Promise<Sql> {
     throw err;
   });
   return sqlPromise;
+}
+
+/** One connection for reserve/settle so a row lock actually blocks the other caller. */
+export async function withTransaction<T>(fn: (sql: Sql) => Promise<T>): Promise<T> {
+  if (typeof window !== "undefined") {
+    throw new Error("withTransaction is server-only");
+  }
+  if (dbSource === "pglite") {
+    const pg = await getPglite();
+    return pg.transaction(async (tx) => {
+      const sql = toSql(async <T>(text: string, params: unknown[]) => {
+        const result = await tx.query<T>(text, params);
+        return result.rows;
+      });
+      return fn(sql);
+    });
+  }
+  await getSql();
+  const pool = globalRef.__pgPool__;
+  if (!pool) throw new Error("Postgres pool chưa sẵn sàng");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const sql = toSql(async <T>(text: string, params: unknown[]) => {
+      const res = await client.query(text, params);
+      return res.rows as T[];
+    });
+    const value = await fn(sql);
+    await client.query("COMMIT");
+    return value;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

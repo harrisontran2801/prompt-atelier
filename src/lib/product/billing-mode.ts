@@ -1,10 +1,23 @@
 import { applyBillingCommand, type BillingCommand, type LedgerState } from "./ledger.ts";
 import type { PlanEnv } from "./plans.ts";
 
-export type BillingMode = "mock" | "disabled";
+export type BillingMode = "mock" | "disabled" | "hosted";
 
 export function billingModeOf(env: { NODE_ENV?: string } = {}): BillingMode {
   return env.NODE_ENV === "production" ? "disabled" : "mock";
+}
+
+export type EconomySurface = {
+  economyStore: "memory" | "sql";
+  billingMode: BillingMode;
+};
+
+/** Production never enables mock or live checkout. SQL is only the ledger. */
+export function economySurface(env: { NODE_ENV?: string; DATABASE_URL?: string } = {}): EconomySurface {
+  const sql = Boolean(env.DATABASE_URL?.trim());
+  if (env.NODE_ENV === "production") return { economyStore: sql ? "sql" : "memory", billingMode: "disabled" };
+  if (sql) return { economyStore: "sql", billingMode: "hosted" };
+  return { economyStore: "memory", billingMode: "mock" };
 }
 
 export function applyMockBilling(

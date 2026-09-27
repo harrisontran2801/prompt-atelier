@@ -16,6 +16,7 @@ export function freshEconomy(now = new Date()): EconomyState {
 
 let state = freshEconomy();
 
+/** In-memory ledger for Local Free and dev tests. Hosted requests use the SQL repository and never this account. */
 export function getEconomy() {
   return state;
 }

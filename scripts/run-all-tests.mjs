@@ -16,6 +16,8 @@ const atelier = run("Prompt Atelier", [
   "--experimental-strip-types",
   "--test",
   join(root, "src/lib/patterns/atelier.test.ts"),
+  join(root, "src/lib/product/product.test.ts"),
+  join(root, "src/lib/product/hosted-economy.test.ts"),
 ]);
 const platform = run("Platform (not Atelier proof)", [join(root, "scripts/run-platform-tests.mjs")]);
 

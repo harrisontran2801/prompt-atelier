@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { ProviderId } from "../ai/catalog.ts";
 import { executeAi } from "../ai/run.ts";
-import { applyMockBilling, billingModeOf } from "./billing-mode.ts";
+import { applyMockBilling, billingModeOf, economySurface } from "./billing-mode.ts";
 import {
   LOCAL_ACCOUNT,
   refundCredits,
@@ -12,9 +12,10 @@ import {
   type BillingCommand,
 } from "./ledger.ts";
 import { getEconomy, setEconomy } from "./memory.ts";
-import { measuredRunSecrets } from "./measured-key.ts";
+import { measuredRunSecrets, managedExecutionPlan } from "./measured-key.ts";
 import { metricFrom } from "./metrics.ts";
 import { estimateCostUsd, estimateTokens, planById } from "./plans.ts";
+import { billUsage } from "./usage.ts";
 import { circuitOpen, consumeFree, noteProviderFailure } from "./quota.ts";
 import { policyById } from "./registry.ts";
 import { buildTrace, decideRoute, type PlanId, type RoutePrefer, type RouteTrace } from "./routing.ts";
@@ -48,10 +49,12 @@ export type UsageSnapshot = {
   spentMonthUsd: number;
   billingProblem: boolean;
   stripeConfigured: boolean;
-  billingMode: "mock" | "disabled";
+  billingMode: "mock" | "disabled" | "hosted";
+  economyStore: "memory" | "sql";
   priceConfigured: boolean;
   lastTrace: RouteTrace | null;
   runs: number;
+  usageConfidence?: "actual" | "estimated" | "unknown";
 };
 
 function requestId(key?: string) {
@@ -60,25 +63,28 @@ function requestId(key?: string) {
 }
 
 function snapshot(): UsageSnapshot {
+  const surface = economySurface(process.env);
   const economy = getEconomy();
   const account = economy.ledger.accounts[LOCAL_ACCOUNT];
   const plan = planById(account.planId);
   const day = new Date().toISOString().slice(0, 10);
   const used = economy.quota.day === day ? economy.quota.used : 0;
   return {
-    planId: account.planId,
-    creditsAvailable: account.credits,
-    creditsReserved: account.reserved,
+    planId: surface.economyStore === "sql" ? "free" : account.planId,
+    creditsAvailable: surface.economyStore === "sql" ? 0 : account.credits,
+    creditsReserved: surface.economyStore === "sql" ? 0 : account.reserved,
     freeRemainingToday: Math.max(0, plan.freeDailyCap - used),
     freeDailyCap: plan.freeDailyCap,
-    spendingCapUsd: account.spendingCapUsd,
-    spentMonthUsd: account.spentMonthUsd,
-    billingProblem: account.billingProblem,
+    spendingCapUsd: surface.economyStore === "sql" ? 0 : account.spendingCapUsd,
+    spentMonthUsd: surface.economyStore === "sql" ? 0 : account.spentMonthUsd,
+    billingProblem: surface.economyStore === "sql" ? false : account.billingProblem,
     stripeConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET),
-    billingMode: billingModeOf(process.env),
+    billingMode: surface.billingMode,
+    economyStore: surface.economyStore,
     priceConfigured: planById("pro").priceUsd != null,
-    lastTrace: economy.lastTrace,
-    runs: economy.runs,
+    lastTrace: surface.economyStore === "sql" ? null : economy.lastTrace,
+    runs: surface.economyStore === "sql" ? 0 : economy.runs,
+    usageConfidence: economy.lastTrace?.usageConfidence,
   };
 }
 
@@ -98,6 +104,13 @@ export const economyApi = createServerFn({ method: "POST" })
     return input;
   })
   .handler(async ({ data }) => {
+    if (process.env.DATABASE_URL?.trim()) {
+      return {
+        ok: false as const,
+        error: "Hosted mode không dùng LOCAL_ACCOUNT. Đăng nhập rồi gọi hosted economy. Thanh toán thật vẫn tắt.",
+        snapshot: snapshot(),
+      };
+    }
     if (data.action === "snapshot") return { ok: true as const, snapshot: snapshot() };
 
     if (data.action === "metric") {
@@ -252,10 +265,12 @@ export const economyApi = createServerFn({ method: "POST" })
     try {
       const model = decision.mode === "byok" ? data.byokModel || "" : decision.model;
       const secrets = measuredRunSecrets(decision.mode, data.byokKey, process.env);
-      if (decision.mode === "managed-paid" && !secrets.managedServerKey) {
+      const plan = managedExecutionPlan(decision.mode, secrets);
+      if (plan.action === "refund") {
         const refunded = refundCredits(reserved.state, { requestId: id, nowIso, reason: "missing-server-key" });
         const trace = buildTrace(id, String(decision.provider), decision, estimatedCostUsd, 0);
         trace.reason = "Route trả phí chưa có key server. Không lấy key từ request thường và không chuyển sang free.";
+        trace.usageConfidence = "unknown";
         setEconomy({ ...getEconomy(), ledger: refunded.state, quota, lastTrace: trace });
         return { ok: false as const, error: trace.reason, decision, trace, snapshot: snapshot() };
       }
@@ -263,25 +278,34 @@ export const economyApi = createServerFn({ method: "POST" })
         provider: decision.provider as ProviderId,
         model,
         messages: (data.messages ?? []).slice(0, 8),
-        userKey: secrets.userKey,
+        userKey: plan.userKey,
         maxTokens: policy?.maxTokens ?? 800,
         allowFallback: false,
-      }, secrets.managedServerKey);
+      }, {
+        managedServerKey: plan.managedServerKey,
+        idempotencyKey: decision.mode === "managed-paid" ? id : undefined,
+      });
+      const billed = billUsage({
+        provider: result.provider,
+        model: result.model,
+        usage: result.usage,
+        estimatedCostUsd,
+      });
+      const actualCost = decision.mode === "managed-paid" ? billed.costUsd : 0;
       const settled = settleCredits(getEconomy().ledger, {
         requestId: id,
-        actualCostUsd: decision.mode === "managed-paid" ? estimatedCostUsd : 0,
+        actualCostUsd: actualCost,
+        actualTokens: billed.actualTokens,
         finalProvider: result.provider,
         nowIso,
       });
-      const trace = buildTrace(
-        id,
-        String(decision.provider),
-        decision,
-        estimatedCostUsd,
-        decision.mode === "managed-paid" ? estimatedCostUsd : 0,
-      );
+      const trace = buildTrace(id, String(decision.provider), decision, estimatedCostUsd, actualCost);
       trace.finalProvider = result.provider;
       trace.fellBack = Boolean(result.fallback);
+      trace.usageConfidence = decision.mode === "managed-paid" ? billed.confidence : result.usageConfidence ?? "unknown";
+      if (billed.confidence !== "actual" && decision.mode === "managed-paid") {
+        trace.reason = "Chưa có usage thực từ provider. Đang chốt theo ước tính, không phải hóa đơn hãng.";
+      }
       if (result.fallback) trace.reason = `Đã chuyển sang ${result.fallback}. Không im lặng.`;
       const current = getEconomy();
       setEconomy({ ...current, ledger: settled.state, quota, lastTrace: trace, runs: current.runs + 1 });
