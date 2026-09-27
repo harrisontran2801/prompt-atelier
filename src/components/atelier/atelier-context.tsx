@@ -23,11 +23,20 @@ type Persisted = {
   snapshots: Snapshot[];
   history: Record<string, SuitePoint[]>;
   recentIds: string[];
+  recipes: SavedRecipe[];
   privacy: boolean;
   allowFallback: boolean;
   provider: ProviderId;
   model: string;
   stack: StackState;
+};
+
+export type SavedRecipe = {
+  id: string;
+  name: string;
+  jobId: string;
+  stack: StackState;
+  createdAt: string;
 };
 
 export type RunView = {
@@ -48,7 +57,7 @@ export type RunView = {
 
 type Workspace = Persisted & {
   ready: boolean;
-  view: "library" | "packs" | "roles" | "editor" | "stack";
+  view: "quick" | "usage" | "library" | "packs" | "roles" | "editor" | "stack";
   activeId: string | null;
   roleFilter: string;
   navOpen: boolean;
@@ -90,6 +99,7 @@ type Actions = {
   exportPack: (packId: string, format: "json" | "md") => void;
   importPack: (raw: string) => void;
   clearError: () => void;
+  saveRecipe: (input: { name: string; jobId: string; stack: StackState }) => void;
 };
 
 const AtelierContext = createContext<Workspace | null>(null);
@@ -104,6 +114,7 @@ function seedState(): Persisted {
     snapshots: [],
     history: {},
     recentIds: [seed.patterns[2]?.id].filter(Boolean),
+    recipes: [],
     privacy: true,
     allowFallback: true,
     provider: "sandbox",
@@ -126,6 +137,7 @@ function loadState(): Persisted {
       patterns: parsed.patterns,
       tests: parsed.tests ?? seed.tests,
       packs: parsed.packs?.length ? parsed.packs : seed.packs,
+      recipes: parsed.recipes ?? [],
       stack: parsed.stack ?? seed.stack,
     };
   } catch {
@@ -176,7 +188,7 @@ async function executeModel(input: {
 export function AtelierProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<Persisted>(seedState);
   const [ready, setReady] = useState(false);
-  const [view, setView] = useState<Workspace["view"]>("library");
+  const [view, setView] = useState<Workspace["view"]>("quick");
   const [activeId, setActiveId] = useState<string | null>("pat.task.research-brief");
   const [roleFilter, setRoleFilter] = useState("");
   const [navOpen, setNav] = useState(false);
@@ -197,10 +209,10 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!ready) return;
-    const { patterns, tests, packs, releases, snapshots, history, recentIds, privacy, allowFallback, provider, model, stack } = data;
+    const { patterns, tests, packs, releases, snapshots, history, recentIds, recipes, privacy, allowFallback, provider, model, stack } = data;
     window.localStorage.setItem(
       STORAGE,
-      JSON.stringify({ patterns, tests, packs, releases, snapshots, history, recentIds, privacy, allowFallback, provider, model, stack }),
+      JSON.stringify({ patterns, tests, packs, releases, snapshots, history, recentIds, recipes, privacy, allowFallback, provider, model, stack }),
     );
   }, [data, ready]);
 
@@ -214,6 +226,19 @@ export function AtelierProvider({ children }: { children: ReactNode }) {
       clearError: () => {
         setError("");
         setNotice("");
+      },
+      saveRecipe: (input) => {
+        const id = `recipe.${Date.now().toString(36)}`;
+        bump((current) => ({
+          ...current,
+          stack: input.stack,
+          recipes: [
+            { id, name: input.name, jobId: input.jobId, stack: input.stack, createdAt: new Date().toISOString() },
+            ...current.recipes,
+          ].slice(0, 20),
+        }));
+        setNotice(`Đã lưu workflow “${input.name}”. Mở Studio khi bạn muốn xem khối và test.`);
+        setError("");
       },
       openPattern: (id) => {
         setActiveId(id);

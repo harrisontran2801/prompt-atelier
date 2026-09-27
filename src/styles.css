@@ -172,6 +172,14 @@ textarea, .prose {
   .var-line { grid-template-columns: 1fr 8rem auto auto; align-items: end; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .side { transition: none; }
+.btn-row button { max-width: 100%; white-space: normal; text-align: center; }
+.job-grid, .card, .main, .topbar { min-width: 0; }
+.card.picked { border-color: var(--color-mint); }
+.card label { display: grid; gap: 0.3rem; font-size: 0.85rem; color: var(--color-muted); }
+.evidence { border-left: 3px solid var(--color-mint); }
+.output-box, .prose, .card, .banner { overflow-wrap: anywhere; }
+a { color: var(--color-mint); }
+
+@media (min-width: 900px) {
+  .job-grid { grid-template-columns: 1fr 1fr 1fr; }
 }

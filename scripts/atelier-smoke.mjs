@@ -14,11 +14,22 @@ function card(page, name) {
   return page.locator("article.card", { has: page.getByRole("heading", { name, exact: true }) });
 }
 
+async function ensureLibrary(page) {
+  const heading = page.getByRole("heading", { name: "Pattern có bằng chứng, không phải snippet." });
+  if (await heading.isVisible().catch(() => false)) return;
+  const libraryBtn = page.getByRole("button", { name: "Thư viện" });
+  if (!(await libraryBtn.isVisible().catch(() => false))) {
+    await page.getByRole("button", { name: "Mở menu" }).click();
+  }
+  await libraryBtn.click();
+  await heading.waitFor();
+}
+
 async function fresh(page) {
   await page.goto(base, { waitUntil: "networkidle" });
   await page.evaluate(() => localStorage.removeItem("prompt-atelier-workspace-v1"));
   await page.reload({ waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: "Pattern có bằng chứng, không phải snippet." }).waitFor();
+  await page.getByRole("heading", { name: "Bạn muốn hoàn thành việc gì?" }).waitFor();
 }
 
 async function runSuite(page) {
@@ -30,7 +41,7 @@ async function runSuite(page) {
 }
 
 async function openPattern(page, name) {
-  await page.getByRole("button", { name: "Library" }).click();
+  await page.getByRole("button", { name: "Thư viện" }).click();
   await card(page, name).getByRole("button", { name: "Open" }).click();
   await page.getByRole("button", { name: "Blocks" }).waitFor();
 }
@@ -55,6 +66,18 @@ watch(page);
 
 try {
   await fresh(page);
+  await page.getByRole("button", { name: "Dùng ví dụ: Trả lời khách hàng" }).click();
+  await page.getByRole("button", { name: "Xem kết quả ngay" }).click();
+  await page.getByRole("region", { name: "Vì sao tin được kết quả này" }).waitFor();
+  await page.getByText("Chạy trên máy. Không gọi mạng.").waitFor();
+  await page.getByRole("button", { name: "Lưu workflow này" }).click();
+  await page.getByText(/Đã lưu workflow/).waitFor();
+  const overflowQuick = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  assert.ok(overflowQuick <= 1, `quick desktop overflow ${overflowQuick}`);
+
+  await ensureLibrary(page);
   const allCount = await page.locator("article.card").count();
   assert.ok(allCount >= 8, `library rendered ${allCount} cards`);
 
@@ -104,15 +127,15 @@ try {
   assert.equal(stored.includes("4242424242424242"), false);
   await runSuite(page);
 
-  await page.getByRole("button", { name: "Library" }).click();
+  await page.getByRole("button", { name: "Thư viện" }).click();
   await card(page, "Research brief").getByRole("button", { name: "Add to stack" }).click();
-  await page.getByRole("button", { name: "Library" }).click();
+  await page.getByRole("button", { name: "Thư viện" }).click();
   await card(page, "Five-part memo").getByRole("button", { name: "Add to stack" }).click();
   await page.getByText(/Task và Format/).waitFor();
   await page.locator("strong", { hasText: "Five-part memo" }).waitFor();
   await page.getByText(/trong prompt|ngoài prompt/).first().waitFor();
 
-  await page.getByRole("button", { name: "Library" }).click();
+  await page.getByRole("button", { name: "Thư viện" }).click();
   await card(page, "Pragmatic code review").getByRole("button", { name: "Open" }).click();
   await page.getByRole("button", { name: "Release" }).click();
   const blocked = page.getByRole("button", { name: "Promote to Production" });
@@ -145,7 +168,7 @@ try {
   await page.getByText(/Production pointer: v1\.2\.0/).waitFor();
   assert.ok((await page.getByRole("button", { name: "Rollback pointer" }).count()) >= 2);
 
-  await page.getByRole("button", { name: "Pattern packs" }).click();
+  await page.getByRole("button", { name: "Gói pattern" }).click();
   const beforeImport = await page.evaluate(() => localStorage.getItem("prompt-atelier-workspace-v1"));
   await page.locator('input[aria-label="Import pack JSON"]').setInputFiles({
     name: "bad.json",
@@ -203,7 +226,7 @@ try {
     buffer: Buffer.from(JSON.stringify(hijack), "utf8"),
   });
   await page.getByText(/không ghi đè/).waitFor();
-  await page.getByRole("button", { name: "Library" }).click();
+  await page.getByRole("button", { name: "Thư viện" }).click();
   await card(page, "Research brief").waitFor();
   await page.getByRole("heading", { name: "Hijack import" }).waitFor();
 
@@ -226,13 +249,16 @@ const phone = await mobile.newPage();
 watch(phone);
 try {
   await fresh(phone);
-  await phone.getByRole("heading", { name: "Pattern có bằng chứng, không phải snippet." }).waitFor();
+  await phone.getByRole("heading", { name: "Bạn muốn hoàn thành việc gì?" }).waitFor();
+  await phone.getByRole("button", { name: "Dùng ví dụ: So sánh lựa chọn" }).click();
+  await phone.getByRole("button", { name: "Xem kết quả ngay" }).click();
+  await phone.getByRole("region", { name: "Vì sao tin được kết quả này" }).waitFor();
   const overflow = await phone.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );
   assert.ok(overflow <= 1, `mobile overflow ${overflow}`);
   await phone.getByRole("button", { name: "Mở menu" }).click();
-  await phone.getByRole("button", { name: "Library" }).waitFor();
+  await phone.getByRole("button", { name: "Thư viện" }).waitFor();
 } catch (error) {
   console.error("MOBILE FLOW FAILED");
   console.error(error);

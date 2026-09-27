@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import { Menu, X } from "lucide-react";
 import { AtelierProvider, useAtelier } from "./atelier-context";
 import { EditorView } from "./editor-view";
+import { QuickView } from "./quick-view";
 import { StackView } from "./stack-view";
+import { UsageView } from "./usage-view";
 import { ROLES, type Pattern, type PatternStatus } from "@/lib/patterns/types";
 
 function Shell() {
@@ -16,7 +18,7 @@ function Shell() {
         </button>
         <div className="brand">
           <strong>Prompt Atelier</strong>
-          <span>Pattern registry · local</span>
+          <span>Việc lặp lại, kết quả kiểm tra được</span>
         </div>
         <div className="top-actions">
           <button className={`chip ${privacy ? "active" : ""}`} onClick={() => actions.setPrivacy(!privacy)}>
@@ -28,11 +30,13 @@ function Shell() {
       <div className="shell">
         <aside className={`side ${navOpen ? "open" : ""}`}>
           <nav className="nav-list">
-            <button className={`nav-btn ${view === "library" ? "active" : ""}`} onClick={() => { actions.setView("library"); actions.setNav(false); }}>Library</button>
-            <button className={`nav-btn ${view === "packs" ? "active" : ""}`} onClick={() => { actions.setView("packs"); actions.setNav(false); }}>Pattern packs</button>
+            <button className={`nav-btn ${view === "quick" ? "active" : ""}`} onClick={() => { actions.setView("quick"); actions.setNav(false); }}>Việc cần làm</button>
+            <button className={`nav-btn ${view === "usage" ? "active" : ""}`} onClick={() => { actions.setView("usage"); actions.setNav(false); }}>Hạn mức</button>
+            <button className={`nav-btn ${view === "library" ? "active" : ""}`} onClick={() => { actions.setView("library"); actions.setNav(false); }}>Thư viện</button>
+            <button className={`nav-btn ${view === "packs" ? "active" : ""}`} onClick={() => { actions.setView("packs"); actions.setNav(false); }}>Gói pattern</button>
             <button className={`nav-btn ${view === "roles" ? "active" : ""}`} onClick={() => { actions.setView("roles"); actions.setNav(false); }}>Roles</button>
-            <button className={`nav-btn ${view === "stack" ? "active" : ""}`} onClick={() => { actions.setView("stack"); actions.setNav(false); }}>Stack</button>
-            <button className={`nav-btn ${view === "editor" ? "active" : ""}`} onClick={() => { actions.setView("editor"); actions.setNav(false); }}>Workspace</button>
+            <button className={`nav-btn ${view === "stack" ? "active" : ""}`} onClick={() => { actions.setView("stack"); actions.setNav(false); }}>Workflow</button>
+            <button className={`nav-btn ${view === "editor" ? "active" : ""}`} onClick={() => { actions.setView("editor"); actions.setNav(false); }}>Studio</button>
           </nav>
           <div>
             <p className="kicker">Gần đây</p>
@@ -49,6 +53,8 @@ function Shell() {
           {error && <div className="banner error" role="alert">{error} <button className="btn-ghost" onClick={actions.clearError}>Đóng</button></div>}
           {notice && <div className="banner ok" role="status">{notice}</div>}
           {importError && <div className="banner error" role="alert">{importError}</div>}
+          {view === "quick" && <QuickView />}
+          {view === "usage" && <UsageView />}
           {view === "library" && <Library />}
           {view === "packs" && <Packs />}
           {view === "roles" && <Roles />}

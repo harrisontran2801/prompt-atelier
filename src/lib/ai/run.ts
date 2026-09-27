@@ -236,31 +236,33 @@ async function fallbackPollinations(input: AiRunInput): Promise<AiRunResult> {
   return { ...result, fallback: "pollinations" };
 }
 
+export async function executeAi(data: AiRunInput): Promise<AiRunResult> {
+  const started = Date.now();
+  const id = requestId();
+  validateInput(data);
+  rateLimit((data.provider || "anon").slice(0, 24));
+  const finish = (result: AiRunResult): AiRunResult => ({
+    ...result,
+    latencyMs: Date.now() - started,
+    requestId: id,
+  });
+  try {
+    const result = await callProvider(data);
+    if (!result.text?.trim()) throw new Error("Model trả về rỗng");
+    return finish(result);
+  } catch (error) {
+    const message = sanitizeError(error instanceof Error ? error.message : "Lỗi AI");
+    if (data.allowFallback !== false && data.provider !== "pollinations" && data.provider !== "sandbox") {
+      try {
+        return finish(await fallbackPollinations(data));
+      } catch (fallbackError) {
+        throw new Error(sanitizeError(fallbackError instanceof Error ? fallbackError.message : message));
+      }
+    }
+    throw new Error(message);
+  }
+}
+
 export const runAi = createServerFn({ method: "POST" })
   .validator((input: AiRunInput) => input)
-  .handler(async ({ data }): Promise<AiRunResult> => {
-    const started = Date.now();
-    const id = requestId();
-    validateInput(data);
-    rateLimit((data.provider || "anon").slice(0, 24));
-    const finish = (result: AiRunResult): AiRunResult => ({
-      ...result,
-      latencyMs: Date.now() - started,
-      requestId: id,
-    });
-    try {
-      const result = await callProvider(data);
-      if (!result.text?.trim()) throw new Error("Model trả về rỗng");
-      return finish(result);
-    } catch (error) {
-      const message = sanitizeError(error instanceof Error ? error.message : "Lỗi AI");
-      if (data.allowFallback !== false && data.provider !== "pollinations" && data.provider !== "sandbox") {
-        try {
-          return finish(await fallbackPollinations(data));
-        } catch (fallbackError) {
-          throw new Error(sanitizeError(fallbackError instanceof Error ? fallbackError.message : message));
-        }
-      }
-      throw new Error(message);
-    }
-  });
+  .handler(async ({ data }) => executeAi(data));
